@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from code_navigator.types import Chunk
+from reporag.types import Chunk
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from code_navigator.retrieval.search import RetrievedChunk
+from reporag.retrieval.search import RetrievedChunk
 
 REWRITE_SYSTEM = (
     "You write search queries for use in a RAG retrieval system. Output only the search query text. It should always reference 'this system'"
@@ -37,11 +37,11 @@ DIAGRAM_SYSTEM = (
     "```mermaid\n"
     "...valid mermaid source...\n"
     "```\n\n"
-    "CRITICAL: For node labels in Mermaid, you MUST wrap the label text in "
+    "CRITICAL: For node labels in Mermaid, you must ALWAYS wrap the label text in "
     "double quotes.\n"
-    "## Example: A[\"login_handler (app.py lines 10-20)\"] --> B[\"SessionManager (auth.py)\"]\n"
-    "Use stable node IDs (e.g. A, B, C) with descriptive quoted labels ALWAYS in the same format as in the example provided. "
-    "Nodes in the diagram should not made be without a quoted label unless explicitly asked for. "
+    "Example: A[\"login_handler (app.py lines 10-20)\"] --> B[\"SessionManager (auth.py)\"]\n"
+    # "Use stable node IDs (e.g. A, B, C) with descriptive quoted labels ALWAYS in the same format as in the example provided. "
+    # "Nodes in the diagram should not made be without a quoted label unless explicitly asked for. "
     "NEVER output the word CITATION in the legend or anywhere in your response."
 )
 

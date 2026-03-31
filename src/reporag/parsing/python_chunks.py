@@ -6,7 +6,7 @@ from pathlib import Path
 import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser
 
-from code_navigator.types import Chunk
+from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from code_navigator.retrieval.search import RetrievedChunk
+    from reporag.retrieval.search import RetrievedChunk
 
 # First ```mermaid ... ``` block (case-insensitive language tag).
 _MERMAID_FENCE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)

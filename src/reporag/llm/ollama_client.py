@@ -20,7 +20,7 @@ def _base_url(override: str | None) -> str:
 class OllamaClient:
     """HTTP client for Ollama embed and chat APIs."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 120.0) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float | None = None) -> None:
         self.base_url = _base_url(base_url)
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
@@ -60,7 +60,7 @@ class OllamaClient:
     def chat(self, model: str, messages: list[dict[str, str]], stream: bool = False) -> str:
         r = self._client.post(
             "/api/chat",
-            json={"model": model, "messages": messages, "stream": stream},
+            json={"model": model, "messages": messages, "stream": stream, "num_ctx": 32000},
         )
         r.raise_for_status()
         data = r.json()
