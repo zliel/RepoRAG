@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from code_navigator.llm.ollama_client import OllamaClient
+from reporag.llm.ollama_client import OllamaClient
 
 
 @pytest.mark.skipif(

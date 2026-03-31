@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from code_navigator.retrieval.search import top_k_similar
+from reporag.retrieval.search import top_k_similar
 
 
 def test_top_k_similar_ordering() -> None:

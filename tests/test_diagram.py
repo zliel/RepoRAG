@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from code_navigator.llm.diagram import (
+from reporag.llm.diagram import (
     extract_mermaid_fence,
     format_model_diagram_response,
     normalize_diagram_markdown,
     validate_mermaid_light,
 )
-from code_navigator.llm.prompts import DIAGRAM_SYSTEM, build_rag_user_content
+from reporag.llm.prompts import DIAGRAM_SYSTEM, build_rag_user_content
 
 
 def test_extract_mermaid_fence_ok() -> None:

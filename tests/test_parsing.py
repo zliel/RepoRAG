@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from code_navigator.parsing.python_chunks import extract_chunks, extract_chunks_from_file
+from reporag.parsing.python_chunks import extract_chunks, extract_chunks_from_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

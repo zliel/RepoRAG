@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from code_navigator.ingestion.walker import read_py_file, walk_py_files
+from reporag.ingestion.walker import read_py_file, walk_py_files
 
 
 def test_walk_py_files_sorted(tmp_path: Path) -> None:

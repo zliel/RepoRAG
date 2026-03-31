@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from code_navigator.llm.prompts import build_context_block
-from code_navigator.retrieval.search import RetrievedChunk
+from reporag.llm.prompts import build_context_block
+from reporag.retrieval.search import RetrievedChunk
 
 
 def test_build_context_block() -> None:

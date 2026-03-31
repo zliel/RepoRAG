@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 import respx
 
-from code_navigator.llm.diagram import format_model_diagram_response
-from code_navigator.llm.ollama_client import OllamaClient
+from reporag.llm.diagram import format_model_diagram_response
+from reporag.llm.ollama_client import OllamaClient
 
 
 @respx.mock

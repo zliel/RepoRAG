@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from code_navigator.indexing.store import open_index
-from code_navigator.types import Chunk
+from reporag.indexing.store import open_index
+from reporag.types import Chunk
 
 
 @pytest.fixture
