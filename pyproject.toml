@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "code-navigator"
+name = "reporag"
 version = "0.1.0"
 description = "Local-first semantic codebase navigator (Python, Ollama, SQLite)"
 readme = "README.md"
@@ -17,14 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "respx>=0.21",
-    "ruff>=0.6",
-]
+dev = ["pytest>=8.0", "respx>=0.21", "ruff>=0.6"]
 
 [project.scripts]
-code-nav = "code_navigator.cli.main:app"
+reporag = "reporag.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
