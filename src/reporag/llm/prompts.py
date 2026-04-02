@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from reporag.retrieval.context_files import ContextSection
 from reporag.retrieval.search import RetrievedChunk
 
 REWRITE_SYSTEM = (
-    "You write search queries for use in a RAG retrieval system. Output only the search query text. It should always reference 'this system'"
-    # "You rewrite user questions into short search queries for retrieving code. "
-    # "Output only the search query text, no quotes or explanation."
+    "You write search queries for use in a RAG retrieval system. "
+    "Output only the search query text. It should always reference 'this system'"
 )
 
 ANSWER_SYSTEM = """You are a careful assistant answering questions about a codebase.
@@ -16,42 +16,147 @@ Rules:
 - If the excerpts are insufficient, say so clearly and answer only what is supported.
 - Do not cite paths or line ranges that are not present in the provided CITATION headers."""
 
-DIAGRAM_SYSTEM = (
-    "You draw diagrams of Python code structure and flow based ONLY on "
-    "retrieved excerpts.\n\n"
-    "Rules:\n"
-    "- Represent ONLY relationships, calls, or structure justified by the "
-    "provided [CITATION ...] blocks.\n"
-    "- Do NOT add modules, classes, functions, or edges not supported by "
-    "those citations.\n"
-    "- If excerpts are insufficient, say so in one short sentence, then "
-    "output a minimal Mermaid diagram (e.g. one node 'Insufficient context' "
-    "or only cited symbols, no guessed links).\n"
-    "In the fenced mermaid block, you should always define a diagram type. "
-    "- Prefer simple Mermaid: flowchart TD or LR, sequenceDiagram, or "
-    "classDiagram. Avoid exotic diagram types.\n\n"
-    "Output format (REQUIRED):\n"
-    "1) A Title"
-    "2) A brief description of the flow as a numbered list. "
-    "3) Exactly one fenced block:\n\n"
-    "```mermaid\n"
-    "...valid mermaid source...\n"
-    "```\n\n"
-    "CRITICAL: For node labels in Mermaid, you must ALWAYS wrap the label text in "
-    "double quotes.\n"
-    "Example: A[\"login_handler (app.py lines 10-20)\"] --> B[\"SessionManager (auth.py)\"]\n"
-    # "Use stable node IDs (e.g. A, B, C) with descriptive quoted labels ALWAYS in the same format as in the example provided. "
-    # "Nodes in the diagram should not made be without a quoted label unless explicitly asked for. "
-    "NEVER output the word CITATION in the legend or anywhere in your response."
-)
+DIAGRAM_SYSTEM = """You are a Mermaid diagram generator for code analysis. STRICT RULES:
+
+ABSOLUTELY REQUIRED:
+- Output ONLY one fenced mermaid code block wrapped in triple backticks
+- No explanations, apologies, or text outside the fence
+- Use only the provided CITATION excerpts; do not invent files, symbols, or behavior
+- All node/group/section text MUST be wrapped in double quotes, no exceptions
+
+INSUFFICIENT CONTEXT EXAMPLE:
+If you cannot determine relationships from the citations, output a minimal diagram:
+```mermaid
+---
+title: Insufficient Context
+config:
+  theme: dark
+  look: classic
+---
+flowchart TD
+    A["Insufficient context for detailed diagram"]
+```
+
+SUFFICIENT CONTEXT EXAMPLE:
+User asks: "Show the data flow"
+Retrieved citations include:
+[CITATION id=1 symbol=process_request], [CITATION id=2 symbol=save_to_db]
+→ You output ONLY:
+```mermaid
+---
+title: Data Flow
+config:
+  theme: One of "default", "dark", "neutral", "base", or "forest"
+  look: Either "classic" or "handDrawn"
+---
+diagramType (e.b. flowchart, sequenceDiagram, classDiagram, architecture-beta, gantt, journey, etc.) TD or LR for flowcharts
+    nodes/groups/sections/etc.
+
+    ...any styles or notes
+```
+
+ADDITIONAL CODE EXAMPLES:
+flowchart with extra styles:
+```mermaid
+---
+title: Title
+config:
+  theme: dark
+  look: handDrawn
+---
+flowchart LR
+    A["Hard edge"] -->|"Link text"| B("Round edge")
+    B --> C{"Decision"}
+    C -->|"One"| D["Result one"]
+    C -->|"Two"| E["Result two"]
+```
+
+architecture-beta diagram:
+```mermaid
+---
+title: Title
+---
+architecture-beta
+    group api(cloud)[API]
+
+    service db(database)[Database] in api
+    service disk1(disk)[Storage] in api
+    service disk2(disk)[Storage] in api
+    service server(server)[Server] in api
+
+    db:L -- R:server
+    disk1:T -- B:server
+    disk2:T -- B:db
+```
+
+kanban:
+```mermaid
+---
+title: Title
+---
+kanban
+  column1[Column Title]
+    task1[Task Description]
+```
+
+user journey:
+```mermaid
+---
+title: Title
+---
+journey
+    title My working day
+    section Go to work
+      Make tea: 5: Me
+      Go upstairs: 3: Me
+      Do work: 1: Me, Cat
+    section Go home
+      Go downstairs: 5: Me
+      Sit down: 5: Me
+```
 
 
-def build_rag_user_content(query: str, context: str) -> str:
-    """Shared user message body for ask/diagram (question + retrieved code)."""
-    return (
-        f"User question:\n{query}\n\n"
-        f"Retrieved code (cite only these paths and line ranges):\n\n{context}"
-    )
+Additional Notes:
+- Be mindful of the syntax difference between diagram types (e.g. sequenceDiagram vs flowchart vs. architecture-beta).
+- When using numbered lists or bullet points in node text, escape them properly to avoid Mermaid parsing issues.
+
+STRICTLY FORBIDDEN:
+- Regular text outside the mermaid fence
+- Apologies or explanations ("I can't tell...", "Based on the code...")
+- Anything other than the mermaid code block
+- Inventing syntax that is not valid Mermaid
+"""
+
+
+def build_context_sections_block(sections: list[ContextSection]) -> str:
+    """Format context sections for prompt."""
+    parts: list[str] = []
+    for s in sections:
+        header = f"[Context: {s.source_path}"
+        if s.heading:
+            header += f" > {s.heading}"
+        header += "]"
+        parts.append(f"{header}\n{s.text}")
+    return "\n\n---\n\n".join(parts)
+
+
+def build_rag_user_content(
+    query: str,
+    context: str,
+    extra_context: str | None = None,
+    context_sections: list[ContextSection] | None = None,
+) -> str:
+    """Shared user message body for ask/diagram (question + retrieved code + optional extra)."""
+    parts = []
+    if context_sections:
+        parts.append(
+            f"Retrieved context:\n{build_context_sections_block(context_sections)}\n\n---\n"
+        )
+    elif extra_context:
+        parts.append(f"Additional reference:\n{extra_context}\n\n---\n")
+    parts.append(f"User question:\n{query}\n\n")
+    parts.append(f"Retrieved code (cite only these paths and line ranges):\n\n{context}")
+    return "".join(parts)
 
 
 def build_context_block(chunks: list[RetrievedChunk]) -> str:
