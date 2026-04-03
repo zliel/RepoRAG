@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import numpy as np
 import typer
 
@@ -120,7 +121,7 @@ def _retrieve_hits(
                 temperature=temperature,
             ).strip()
             logger.info("Rewritten query: %s", search_query)
-        except Exception as e:
+        except (httpx.HTTPError, ValueError) as e:
             logger.warning("Query rewrite failed, using original: %s", e)
             search_query = query
 

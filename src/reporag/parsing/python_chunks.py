@@ -77,6 +77,6 @@ def extract_chunks_from_file(path: Path, root: Path) -> list[Chunk] | None:
         return None
     try:
         return extract_chunks(rel, source_bytes)
-    except Exception as e:
+    except (UnicodeDecodeError, OSError) as e:
         logger.warning("Failed to parse %s: %s", path, e)
         return None

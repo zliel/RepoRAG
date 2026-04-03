@@ -91,10 +91,8 @@ embed_batch = 32
 
         try:
             data = tomllib.loads(text)
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning("Could not parse config %s: %s", path, e)
+        except tomllib.TOMLDecodeError as e:
+            logger.warning("Could not parse config %s: %s", path, e)
             return
 
         reporag = data.get("reporag", {})
