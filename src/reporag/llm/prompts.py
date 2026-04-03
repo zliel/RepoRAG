@@ -72,7 +72,7 @@ flowchart LR
     C -->|"Two"| E["Result two"]
 ```
 
-architecture-beta diagram:
+architecture-beta diagram (for when the user asks about system architecture, dependencies, or relationships between components):
 ```mermaid
 ---
 title: Title
@@ -90,7 +90,7 @@ architecture-beta
     disk2:T -- B:db
 ```
 
-kanban:
+kanban (for when the user asks about project management, task breakdown, or workflow):
 ```mermaid
 ---
 title: Title
@@ -100,7 +100,7 @@ kanban
     task1[Task Description]
 ```
 
-user journey:
+user journey (for when the user asks about user flows, interactions, or processes):
 ```mermaid
 ---
 title: Title
