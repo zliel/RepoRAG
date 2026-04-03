@@ -1,23 +1,32 @@
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from reporag.constants import (
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_EMBED_BATCH,
+    DEFAULT_EMBED_MODEL,
+    DEFAULT_TEMPERATURE,
+)
 from reporag.llm.backends import BackendType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class Config:
     backend: BackendType = "ollama"
-    embed_model: str = "nomic-embed-text-v2-moe"
-    chat_model: str = "deepseek-coder-v2:16b-lite-instruct-q3_K_M"
+    embed_model: str = DEFAULT_EMBED_MODEL
+    chat_model: str = DEFAULT_CHAT_MODEL
     db: str = "index.sqlite"
     base_url: str | None = None
     api_key: str | None = None
-    embed_batch: int = 32
-    temperature: float = 0.2
+    embed_batch: int = DEFAULT_EMBED_BATCH
+    temperature: float = DEFAULT_TEMPERATURE
 
     @property
     def ollama_base(self) -> str | None:
@@ -25,7 +34,7 @@ class Config:
             return self.base_url
         return None
 
-    DEFAULT_CONFIG = """\
+    DEFAULT_CONFIG = f"""\
 # RepoRAG Configuration
 # https://github.com/your-repo/reporag
 
@@ -37,19 +46,19 @@ backend = "ollama"
 # base_url = "http://127.0.0.1:11434"
 
 # Embedding model for vector search
-embed_model = "nomic-embed-text-v2-moe"
+embed_model = "{DEFAULT_EMBED_MODEL}"
 
 # Chat model for RAG and generation
-chat_model = "deepseek-coder-v2:16b-lite-instruct-q3_K_M"
+chat_model = "{DEFAULT_CHAT_MODEL}"
 
 # Temperature for chat model (0.0-1.0, lower = more deterministic)
-temperature = 0.2
+temperature = {DEFAULT_TEMPERATURE}
 
 # Database path for the embedding index
 db = "index.sqlite"
 
 # Batch size for embedding generation
-embed_batch = 32
+embed_batch = {DEFAULT_EMBED_BATCH}
 
 # API key (for OpenAI-compatible backends like vllm, llamacpp, lmstudio)
 # api_key = ""
@@ -73,9 +82,7 @@ embed_batch = 32
             default_path = Path.home() / ".config" / "reporag" / "config.toml"
             default_path.parent.mkdir(parents=True, exist_ok=True)
             if not default_path.exists():
-                import logging
-
-                logging.getLogger(__name__).info("Creating default config at %s", default_path)
+                logger.info("Creating default config at %s", default_path)
                 default_path.write_text(cls.DEFAULT_CONFIG, encoding="utf-8")
 
         return config
@@ -84,9 +91,7 @@ embed_batch = 32
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as e:
-            import logging
-
-            logging.getLogger(__name__).warning("Could not read config %s: %s", path, e)
+            logger.warning("Could not read config %s: %s", path, e)
             return
 
         try:
