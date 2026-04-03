@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -36,14 +37,10 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Local-first semantic Python codebase navigator (Ollama + SQLite).")
 
-_config: Config | None = None
 
-
+@lru_cache
 def get_config() -> Config:
-    global _config
-    if _config is None:
-        _config = Config.from_file()
-    return _config
+    return Config.from_file()
 
 
 def get_backend(
