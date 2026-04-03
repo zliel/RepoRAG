@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from reporag.constants import DEFAULT_NUM_CTX, DEFAULT_TEMPERATURE
 from reporag.llm.backends.base import LLMBackend
 
 logger = logging.getLogger(__name__)
@@ -67,8 +68,10 @@ class OllamaBackend(LLMBackend):
                 "model": model,
                 "messages": messages,
                 "stream": stream,
-                "num_ctx": 32000,
-                "options": {"temperature": temperature if temperature is not None else 0.2},
+                "num_ctx": DEFAULT_NUM_CTX,
+                "options": {
+                    "temperature": temperature if temperature is not None else DEFAULT_TEMPERATURE
+                },
             },
         )
         r.raise_for_status()
