@@ -155,3 +155,6 @@ cython_debug/
 # Project Specific
 index.sqlite
 .ruff_cache/
+
+# Config files (may contain sensitive URLs)
+.reporag.toml

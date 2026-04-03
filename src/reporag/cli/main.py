@@ -10,10 +10,11 @@ from pathlib import Path
 import numpy as np
 import typer
 
+from reporag.config import Config
 from reporag.indexing.store import open_index
 from reporag.ingestion.walker import read_py_file, walk_py_files
+from reporag.llm.backends import BackendType, LLMBackend, create_backend
 from reporag.llm.diagram import format_model_diagram_response
-from reporag.llm.ollama_client import OllamaClient
 from reporag.llm.prompts import (
     ANSWER_SYSTEM,
     DIAGRAM_SYSTEM,
@@ -22,6 +23,11 @@ from reporag.llm.prompts import (
     build_rag_user_content,
 )
 from reporag.parsing.python_chunks import extract_chunks
+from reporag.retrieval.context_files import (
+    ContextSection,
+    chunk_context_path,
+    retrieve_context_sections,
+)
 from reporag.retrieval.search import RetrievedChunk, top_k_similar
 from reporag.types import Chunk
 
@@ -29,10 +35,23 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Local-first semantic Python codebase navigator (Ollama + SQLite).")
 
-DEFAULT_EMBED_MODEL = "nomic-embed-text-v2-moe"
-# DEFAULT_CHAT_MODEL = "qwen3-vl:8b-instruct"
-DEFAULT_CHAT_MODEL = "deepseek-coder-v2:16b-lite-instruct-q3_K_M"
-EMBED_BATCH = 32
+_config: Config | None = None
+
+
+def get_config() -> Config:
+    global _config
+    if _config is None:
+        _config = Config.from_file()
+    return _config
+
+
+def get_backend(
+    cfg: Config | None = None, backend_override: BackendType | None = None
+) -> LLMBackend:
+    if cfg is None:
+        cfg = get_config()
+    backend_type = backend_override or cfg.backend
+    return create_backend(backend_type, base_url=cfg.base_url, api_key=cfg.api_key)
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -44,14 +63,35 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
+def read_context_path(path: Path) -> str:
+    """Read context from a file or directory. Returns combined text from all files."""
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+
+    supported = {".md", ".txt", ".text", ".markdown"}
+    files: list[str] = []
+    for p in sorted(path.rglob("*")):
+        if p.is_file() and p.suffix.lower() in supported:
+            rel = p.relative_to(path)
+            content = p.read_text(encoding="utf-8")
+            files.append(f"# {rel}\n{content}")
+
+    if not files:
+        logger.warning("No supported files (.md, .txt) found in %s", path)
+        return ""
+
+    return "\n\n---\n\n".join(files)
+
+
 def _retrieve_hits(
-    client: OllamaClient,
+    client: LLMBackend,
     query: str,
     db: Path,
     k: int,
     embed_model: str,
     chat_model: str,
     no_rewrite: bool,
+    temperature: float | None = None,
 ) -> tuple[list[RetrievedChunk], str]:
     """
     Open index, optional rewrite, embed search string, return top-k chunks and search_query used.
@@ -77,6 +117,7 @@ def _retrieve_hits(
                     {"role": "system", "content": REWRITE_SYSTEM},
                     {"role": "user", "content": query},
                 ],
+                temperature=temperature,
             ).strip()
             logger.info("Rewritten query: %s", search_query)
         except Exception as e:
@@ -140,21 +181,20 @@ def cmd_chunks(
 @app.command("index")
 def cmd_index(
     root: Path = typer.Argument(..., exists=True, file_okay=False, help="Project root."),
-    db: Path = typer.Option(Path("index.sqlite"), "--db", help="SQLite index path."),
-    embed_model: str = typer.Option(
-        DEFAULT_EMBED_MODEL,
-        "--embed-model",
-        help="Ollama embedding model.",
+    db: Path | None = typer.Option(
+        None, "--db", help="SQLite index path (default: from config or index.sqlite)."
     ),
-    ollama_base: str | None = typer.Option(
-        None,
-        "--ollama-base-url",
-        help="Ollama base URL (default: OLLAMA_HOST or http://127.0.0.1:11434).",
+    embed_model: str | None = typer.Option(None, "--embed-model", help="Embedding model."),
+    backend: BackendType | None = typer.Option(
+        None, "--backend", help="LLM backend (ollama, vllm, llamacpp, lmstudio)."
     ),
 ) -> None:
     """Build embedding index for all Python chunks."""
+    cfg = get_config()
     root = root.resolve()
-    client = OllamaClient(base_url=ollama_base)
+    db = db or Path(cfg.db)
+    embed_model = embed_model or cfg.embed_model
+    client = get_backend(cfg, backend)
     idx = open_index(db)
     try:
         idx.clear()
@@ -170,8 +210,8 @@ def cmd_index(
             return
         logger.info("Embedding %d chunks with model %s", len(chunks_flat), embed_model)
         dim: int | None = None
-        for i in range(0, len(chunks_flat), EMBED_BATCH):
-            batch = chunks_flat[i : i + EMBED_BATCH]
+        for i in range(0, len(chunks_flat), cfg.embed_batch):
+            batch = chunks_flat[i : i + cfg.embed_batch]
             texts = [c.text for c in batch]
             vectors = client.embed(texts, embed_model)
             if len(vectors) != len(batch):
@@ -182,7 +222,7 @@ def cmd_index(
                 elif len(vec) != dim:
                     raise ValueError(f"Inconsistent embedding dimension: {len(vec)} vs {dim}")
                 idx.insert_chunk(ch, vec)
-            done = min(i + EMBED_BATCH, len(chunks_flat))
+            done = min(i + cfg.embed_batch, len(chunks_flat))
             logger.info("Indexed %d / %d chunks", done, len(chunks_flat))
         if dim is not None:
             idx.set_meta("embed_dim", str(dim))
@@ -196,17 +236,18 @@ def cmd_index(
 @app.command("search")
 def cmd_search(
     query: str = typer.Argument(..., help="Natural language query."),
-    db: Path = typer.Option(Path("index.sqlite"), "--db", help="SQLite index path."),
-    k: int = typer.Option(8, "-k", "--top-k", help="Number of chunks to retrieve."),
-    embed_model: str = typer.Option(
-        DEFAULT_EMBED_MODEL,
-        "--embed-model",
-        help="Ollama embedding model.",
+    db: Path | None = typer.Option(
+        None, "--db", help="SQLite index path (default: from config or index.sqlite)."
     ),
-    ollama_base: str | None = typer.Option(None, "--ollama-base-url"),
+    k: int = typer.Option(8, "-k", "--top-k", help="Number of chunks to retrieve."),
+    embed_model: str | None = typer.Option(None, "--embed-model", help="Embedding model."),
+    backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
 ) -> None:
     """Retrieve top-k chunks for a query."""
-    client = OllamaClient(base_url=ollama_base)
+    cfg = get_config()
+    db = db or Path(cfg.db)
+    embed_model = embed_model or cfg.embed_model
+    client = get_backend(cfg, backend)
     try:
         idx = open_index(db)
         try:
@@ -243,28 +284,57 @@ def cmd_search(
 @app.command("ask")
 def cmd_ask(
     query: str = typer.Argument(..., help="Question about the codebase."),
-    db: Path = typer.Option(Path("index.sqlite"), "--db", help="SQLite index path."),
+    db: Path | None = typer.Option(
+        None, "--db", help="SQLite index path (default: from config or index.sqlite)."
+    ),
     k: int = typer.Option(8, "-k", "--top-k", help="Chunks to pass to the model."),
-    embed_model: str = typer.Option(DEFAULT_EMBED_MODEL, "--embed-model"),
-    chat_model: str = typer.Option(DEFAULT_CHAT_MODEL, "--chat-model"),
-    ollama_base: str | None = typer.Option(None, "--ollama-base-url"),
+    embed_model: str | None = typer.Option(None, "--embed-model"),
+    chat_model: str | None = typer.Option(None, "--chat-model"),
+    backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip query rewrite step."),
+    context_file: Path | None = typer.Option(
+        None,
+        "--context",
+        "-c",
+        help="Additional context file or directory to retrieve from and include in prompt.",
+    ),
+    context_k: int = typer.Option(
+        3, "--context-k", help="Context sections to retrieve from -c files."
+    ),
 ) -> None:
-    """Answer using retrieved context and Ollama chat."""
-    client = OllamaClient(base_url=ollama_base)
+    """Answer using retrieved context and LLM chat."""
+    cfg = get_config()
+    db = db or Path(cfg.db)
+    embed_model = embed_model or cfg.embed_model
+    chat_model = chat_model or cfg.chat_model
+    temperature = cfg.temperature
+    client = get_backend(cfg, backend)
+    context_sections: list[ContextSection] | None = None
+    if context_file is not None:
+        sections = chunk_context_path(context_file)
+        if sections:
+            context_sections = retrieve_context_sections(
+                client, query, sections, embed_model, context_k
+            )
+            logger.info(
+                "Retrieved %d context sections from %s", len(context_sections), context_file
+            )
     try:
-        hits, _ = _retrieve_hits(client, query, db, k, embed_model, chat_model, no_rewrite)
+        hits, _ = _retrieve_hits(
+            client, query, db, k, embed_model, chat_model, no_rewrite, temperature
+        )
         if not hits:
             typer.echo("No chunks retrieved.", err=True)
             raise typer.Exit(1)
-        context = build_context_block(hits)
-        user_msg = build_rag_user_content(query, context)
+        context_block = build_context_block(hits)
+        user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
         answer = client.chat(
             chat_model,
             [
                 {"role": "system", "content": ANSWER_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
+            temperature=temperature,
         )
         typer.echo(answer)
         typer.echo("\n---\nSources:", err=True)
@@ -277,11 +347,13 @@ def cmd_ask(
 @app.command("diagram")
 def cmd_diagram(
     query: str = typer.Argument(..., help="What to visualize (flow, dependencies, classes, etc.)."),
-    db: Path = typer.Option(Path("index.sqlite"), "--db", help="SQLite index path."),
+    db: Path | None = typer.Option(
+        None, "--db", help="SQLite index path (default: from config or index.sqlite)."
+    ),
     k: int = typer.Option(8, "-k", "--top-k", help="Chunks to pass to the model."),
-    embed_model: str = typer.Option(DEFAULT_EMBED_MODEL, "--embed-model"),
-    chat_model: str = typer.Option(DEFAULT_CHAT_MODEL, "--chat-model"),
-    ollama_base: str | None = typer.Option(None, "--ollama-base-url"),
+    embed_model: str | None = typer.Option(None, "--embed-model"),
+    chat_model: str | None = typer.Option(None, "--chat-model"),
+    backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip query rewrite step."),
     out: Path | None = typer.Option(
         None,
@@ -295,22 +367,51 @@ def cmd_diagram(
         "-p",
         help="Generate PNG image from mermaid diagram.",
     ),
+    context_path: Path | None = typer.Option(
+        None,
+        "--context",
+        "-c",
+        help="Additional context file or directory to retrieve from and include in prompt.",
+    ),
+    context_k: int = typer.Option(
+        3,
+        "--context-k",
+        help="Context sections to retrieve from -c files.",
+    ),
 ) -> None:
     """Generate a grounded Mermaid diagram from retrieved code context."""
-    client = OllamaClient(base_url=ollama_base)
+    cfg = get_config()
+    db = db or Path(cfg.db)
+    embed_model = embed_model or cfg.embed_model
+    chat_model = chat_model or cfg.chat_model
+    temperature = cfg.temperature
+    client = get_backend(cfg, backend)
+    context_sections: list[ContextSection] | None = None
+    if context_path is not None:
+        sections = chunk_context_path(context_path)
+        if sections:
+            context_sections = retrieve_context_sections(
+                client, query, sections, embed_model, context_k
+            )
+            logger.info(
+                "Retrieved %d context sections from %s", len(context_sections), context_path
+            )
     try:
-        hits, _ = _retrieve_hits(client, query, db, k, embed_model, chat_model, no_rewrite)
+        hits, _ = _retrieve_hits(
+            client, query, db, k, embed_model, chat_model, no_rewrite, temperature
+        )
         if not hits:
             typer.echo("No chunks retrieved.", err=True)
             raise typer.Exit(1)
-        context = build_context_block(hits)
-        user_msg = build_rag_user_content(query, context)
+        context_block = build_context_block(hits)
+        user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
         raw = client.chat(
             chat_model,
             [
                 {"role": "system", "content": DIAGRAM_SYSTEM},
-                {"role": "user", "content": user_msg},
+                {"role": "user", "content": f"{user_msg}\nOnly output a mermaid code block"},
             ],
+            temperature=temperature,
         )
         md, had_fence, shape_ok = format_model_diagram_response(raw, chunks=hits)
         if not had_fence:

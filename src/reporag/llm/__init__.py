@@ -1,3 +1,18 @@
-from reporag.llm.ollama_client import OllamaClient
+from reporag.llm.backends import (
+    BackendType,
+    LLMBackend,
+    OllamaBackend,
+    OpenAICompatBackend,
+    create_backend,
+)
 
-__all__ = ["OllamaClient"]
+OllamaClient = OllamaBackend
+
+__all__ = [
+    "LLMBackend",
+    "OllamaBackend",
+    "OpenAICompatBackend",
+    "BackendType",
+    "create_backend",
+    "OllamaClient",
+]

@@ -55,7 +55,8 @@ def normalize_diagram_markdown(preamble: str, mermaid_body: str) -> str:
 
 
 def resolve_citation_markers(
-    text: str, chunks: list[RetrievedChunk] | None,
+    text: str,
+    chunks: list[RetrievedChunk] | None,
 ) -> str:
     """Replace leftover 'CITATION id=N (…)' markers with human-readable names.
     Wraps the result in double quotes for Mermaid compatibility.
@@ -76,6 +77,28 @@ def resolve_citation_markers(
     return _CITATION_MARKER.sub(_replace, text)
 
 
+def _clean_preamble(preamble: str) -> str:
+    """Strip explanatory text, keeping only title and brief description.
+
+    Heuristic: If preamble has multiple paragraphs or looks like analysis,
+    keep only the first line (likely a title). If it looks like a reasonable
+    title+description (1-3 short lines), keep as-is.
+    """
+    if not preamble:
+        return ""
+
+    lines = preamble.split("\n")
+    non_empty = [line.strip() for line in lines if line.strip()]
+
+    if not non_empty:
+        return ""
+
+    if len(non_empty) <= 3 and all(len(line) < 200 for line in non_empty):
+        return preamble
+
+    return non_empty[0] if non_empty else ""
+
+
 def format_model_diagram_response(
     raw: str,
     chunks: list[RetrievedChunk] | None = None,
@@ -87,11 +110,12 @@ def format_model_diagram_response(
     If *chunks* is provided, any leftover ``CITATION id=N`` markers in
     the legend are resolved to the actual symbol names.
     """
-    # Resolve stale CITATION markers before further processing.
     raw = resolve_citation_markers(raw, chunks)
 
     body, preamble = extract_mermaid_fence(raw)
     if body is None:
         return raw.strip() + "\n", False, False
+
+    clean_preamble = _clean_preamble(preamble)
     shape_ok = validate_mermaid_light(body)
-    return normalize_diagram_markdown(preamble, body), True, shape_ok
+    return normalize_diagram_markdown(clean_preamble, body), True, shape_ok
