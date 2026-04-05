@@ -81,3 +81,64 @@ flowchart TD
         assert "flowchart TD" in md
     finally:
         c.close()
+
+
+@respx.mock
+def test_stream_chat() -> None:
+    """Test streaming response yields chunks correctly."""
+    ndjson_content = (
+        b'{"message": {"content": "Hello "}}\n'
+        b'{"message": {"content": "world!"}}\n'
+        b'{"message": {"content": ""}, "done": true}'
+    )
+    respx.post("http://test/api/chat").mock(
+        return_value=httpx.Response(200, content=ndjson_content)
+    )
+    c = OllamaClient(base_url="http://test")
+    try:
+        chunks = list(c.stream_chat("m", [{"role": "user", "content": "hi"}]))
+        assert "Hello " in chunks
+        assert "world!" in chunks
+        assert all(isinstance(c, str) for c in chunks)
+    finally:
+        c.close()
+
+
+@respx.mock
+def test_stream_chat_skips_empty_content() -> None:
+    """Test that empty content strings are skipped in streaming."""
+    ndjson_responses = [
+        b'{"message": {"content": "Hello"}}',
+        b'{"message": {"content": ""}}',
+        b'{"message": {"content": "world"}}',
+        b'{"message": {"content": ""}, "done": true}',
+    ]
+
+    respx.post("http://test/api/chat").mock(
+        return_value=httpx.Response(200, content=b"\n".join(ndjson_responses))
+    )
+    c = OllamaClient(base_url="http://test")
+    try:
+        chunks = list(c.stream_chat("m", [{"role": "user", "content": "hi"}]))
+        assert chunks == ["Hello", "world"]
+    finally:
+        c.close()
+
+
+@respx.mock
+def test_stream_chat_handles_done_field() -> None:
+    """Test that streaming continues past done=False until done=True."""
+    ndjson_responses = [
+        b'{"message": {"content": "Part1"}, "done": false}',
+        b'{"message": {"content": "Part2"}, "done": false}',
+        b'{"message": {"content": "Part3"}, "done": true}',
+    ]
+    respx.post("http://test/api/chat").mock(
+        return_value=httpx.Response(200, content=b"\n".join(ndjson_responses))
+    )
+    c = OllamaClient(base_url="http://test")
+    try:
+        chunks = list(c.stream_chat("m", [{"role": "user", "content": "hi"}]))
+        assert chunks == ["Part1", "Part2", "Part3"]
+    finally:
+        c.close()

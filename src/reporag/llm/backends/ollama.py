@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -81,6 +83,35 @@ class OllamaBackend(LLMBackend):
         if not isinstance(content, str):
             raise ValueError("Unexpected chat response: missing message.content")
         return content
+
+    def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+    ) -> Iterator[str]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "num_ctx": DEFAULT_NUM_CTX,
+            "options": {
+                "temperature": temperature if temperature is not None else DEFAULT_TEMPERATURE
+            },
+        }
+        with self._client.stream("POST", "/api/chat", json=payload) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning("Skipping malformed JSON line: %s", line)
+                        continue
+                    msg = data.get("message") or {}
+                    content = msg.get("content", "")
+                    if content:
+                        yield content
 
     def close(self) -> None:
         self._client.close()

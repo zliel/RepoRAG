@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -58,6 +60,38 @@ class OpenAICompatBackend(LLMBackend):
         if not choices:
             raise ValueError("No choices in chat response")
         return choices[0].get("message", {}).get("content", "")
+
+    def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+    ) -> Iterator[str]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        with self._client.stream("POST", "/v1/chat/completions", json=payload) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line and line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning("Skipping malformed SSE data: %s", data_str)
+                        continue
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
 
     def close(self) -> None:
         self._client.close()
