@@ -26,6 +26,6 @@ Use `-v` / `--verbose` for debug logs. Override models with `--embed-model` and 
 
 ### Diagrams
 
-Output is Markdown containing a ` ```mermaid ... ``` block, normalized from the model response. If the model omits a fence, the raw text is printed and a warning is logged.
+Output is Markdown containing a ` ```mermaid ...``` block, normalized from the model response. If the model omits a fence, the raw text is printed and a warning is logged.
 
 **Optional PNG/SVG:** install [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`npm install -g @mermaid-js/mermaid-cli`) and then use `-p <file_name>` to generate and save a diagram image.
