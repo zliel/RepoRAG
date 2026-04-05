@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -126,6 +127,20 @@ def _retrieve_hits(
     q = np.array(vecs[0], dtype=np.float32)
     hits = top_k_similar(q, mat, meta, k)
     return hits, search_query
+
+
+def stream_output(chunks: Iterator[str], silent: bool = False) -> str:
+    """Print streaming chunks to stdout (unless silent), return full response."""
+    if not silent:
+        typer.echo("Generating response...", err=True)
+    full: list[str] = []
+    for chunk in chunks:
+        if not silent:
+            print(chunk, end="", flush=True)
+        full.append(chunk)
+    if not silent:
+        print()
+    return "".join(full)
 
 
 @app.callback()
@@ -299,8 +314,13 @@ def cmd_ask(
     context_k: int = typer.Option(
         3, "--context-k", help="Context sections to retrieve from -c files."
     ),
+    stream: bool | None = typer.Option(
+        None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
+    ),
 ) -> None:
     """Answer using retrieved context and LLM chat."""
+    if stream is None:
+        stream = sys.stdout.isatty()
     cfg = get_config()
     db = db or Path(cfg.db)
     embed_model = embed_model or cfg.embed_model
@@ -326,15 +346,25 @@ def cmd_ask(
             raise typer.Exit(1)
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
-        answer = client.chat(
-            chat_model,
-            [
-                {"role": "system", "content": ANSWER_SYSTEM},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=temperature,
-        )
-        typer.echo(answer)
+        messages = [
+            {"role": "system", "content": ANSWER_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ]
+        if stream:
+            try:
+                answer = stream_output(
+                    client.stream_chat(chat_model, messages, temperature=temperature)
+                )
+            except httpx.HTTPError as e:
+                typer.secho(f"\nError during streaming: {e}", fg="red", err=True)
+                raise typer.Exit(1)
+        else:
+            answer = client.chat(
+                chat_model,
+                messages,
+                temperature=temperature,
+            )
+            typer.echo(answer)
         typer.echo("\n---\nSources:", err=True)
         for h in hits:
             typer.echo(f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})", err=True)
@@ -376,8 +406,13 @@ def cmd_diagram(
         "--context-k",
         help="Context sections to retrieve from -c files.",
     ),
+    stream: bool | None = typer.Option(
+        None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
+    ),
 ) -> None:
     """Generate a grounded Mermaid diagram from retrieved code context."""
+    if stream is None:
+        stream = sys.stdout.isatty()
     cfg = get_config()
     db = db or Path(cfg.db)
     embed_model = embed_model or cfg.embed_model
@@ -403,14 +438,25 @@ def cmd_diagram(
             raise typer.Exit(1)
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
-        raw = client.chat(
-            chat_model,
-            [
-                {"role": "system", "content": DIAGRAM_SYSTEM},
-                {"role": "user", "content": f"{user_msg}\nOnly output a mermaid code block"},
-            ],
-            temperature=temperature,
-        )
+        messages = [
+            {"role": "system", "content": DIAGRAM_SYSTEM},
+            {"role": "user", "content": f"{user_msg}\nOnly output a mermaid code block"},
+        ]
+        if stream:
+            try:
+                typer.echo("Generating response...", err=True)
+                raw = stream_output(
+                    client.stream_chat(chat_model, messages, temperature=temperature),
+                )
+            except httpx.HTTPError as e:
+                typer.secho(f"\nError during streaming: {e}", fg="red", err=True)
+                raise typer.Exit(1)
+        else:
+            raw = client.chat(
+                chat_model,
+                messages,
+                temperature=temperature,
+            )
         md, had_fence, shape_ok = format_model_diagram_response(raw, chunks=hits)
         if not had_fence:
             logger.warning("No ```mermaid fence in model output; writing raw response")
@@ -418,7 +464,8 @@ def cmd_diagram(
             logger.warning(
                 "Mermaid body does not start with a known diagram type; output may not render"
             )
-        typer.echo(md, nl=False)
+        if not stream:
+            typer.echo(md, nl=False)
         if out is not None:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(md, encoding="utf-8")
