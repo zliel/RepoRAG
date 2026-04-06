@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     text TEXT NOT NULL,
     embedding BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS file_metadata (
+    path TEXT PRIMARY KEY,
+    mtime REAL NOT NULL,
+    indexed_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 """
 
 
@@ -53,6 +59,36 @@ class ChunkIndex:
     def clear(self) -> None:
         self._conn.execute("DELETE FROM chunks")
         self._conn.execute("DELETE FROM meta")
+        self._conn.execute("DELETE FROM file_metadata")
+        self._conn.commit()
+
+    def upsert_file_mtime(self, path: str, mtime: float, indexed_at: float) -> None:
+        sql = """
+            INSERT INTO file_metadata(path, mtime, indexed_at) VALUES(?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, indexed_at = excluded.indexed_at
+        """
+        self._conn.execute(sql, (path, mtime, indexed_at))
+        self._conn.commit()
+
+    def get_all_file_mtimes(self) -> dict[str, tuple[float, float]]:
+        rows = self._conn.execute("SELECT path, mtime, indexed_at FROM file_metadata").fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def delete_chunks_by_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        placeholders = ",".join("?" * len(paths))
+        self._conn.execute(f"DELETE FROM chunks WHERE path IN ({placeholders})", paths)
+
+    def delete_file_metadata_by_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        placeholders = ",".join("?" * len(paths))
+        self._conn.execute(f"DELETE FROM file_metadata WHERE path IN ({placeholders})", paths)
+        self._conn.commit()
+
+    def clear_file_metadata(self) -> None:
+        self._conn.execute("DELETE FROM file_metadata")
         self._conn.commit()
 
     def set_meta(self, key: str, value: str) -> None:
