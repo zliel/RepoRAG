@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import typer
+from tqdm import tqdm
 
 from reporag.config import Config
 from reporag.indexing.store import open_index
@@ -201,47 +202,133 @@ def cmd_index(
     backend: BackendType | None = typer.Option(
         None, "--backend", help="LLM backend (ollama, vllm, llamacpp, lmstudio)."
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force full reindex: clear DB and reindex all files.",
+    ),
 ) -> None:
-    """Build embedding index for all Python chunks."""
+    """Build embedding index for all Python chunks (incremental by default)."""
     cfg = get_config()
     root = root.resolve()
     db = db or Path(cfg.db)
     embed_model = embed_model or cfg.embed_model
     client = get_backend(cfg, backend)
     idx = open_index(db)
+
+    httpx_logger = logging.getLogger("httpx")
+    original_httpx_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+
     try:
-        idx.clear()
-        chunks_flat: list[Chunk] = []
-        for p in walk_py_files(root):
-            rel, text = read_py_file(p, root)
-            source_bytes = text.encode("utf-8")
-            chunks_flat.extend(extract_chunks(rel, source_bytes))
-        if not chunks_flat:
-            logger.warning("No chunks found under %s", root)
-            idx.set_meta("embed_model", embed_model)
-            idx.set_meta("embed_dim", "0")
+        import time
+
+        current_time = time.time()
+        indexed_mtimes: dict[str, tuple[float, float]] = {}
+        if not force:
+            indexed_mtimes = idx.get_all_file_mtimes()
+
+        tqdm.write("Discovering files...", file=sys.stderr)
+        file_paths = walk_py_files(root)
+
+        to_reindex: list[Path] = []
+        to_remove: list[str] = []
+        unchanged_count = 0
+
+        for p in file_paths:
+            rel = p.relative_to(root).as_posix()
+            mtime = p.stat().st_mtime
+            if rel in indexed_mtimes:
+                indexed_mtime, _ = indexed_mtimes[rel]
+                if mtime <= indexed_mtime:
+                    unchanged_count += 1
+                else:
+                    to_reindex.append(p)
+            else:
+                to_reindex.append(p)
+
+        indexed_paths = {p.relative_to(root).as_posix() for p in file_paths}
+        for rel in indexed_mtimes:
+            if rel not in indexed_paths:
+                to_remove.append(rel)
+
+        total_files = len(file_paths)
+        tqdm.write(
+            f"Found {total_files} Python files: "
+            f"{unchanged_count} unchanged, {len(to_reindex)} to reindex, {len(to_remove)} to remove.",
+            file=sys.stderr,
+        )
+
+        if force:
+            idx.clear()
+            to_reindex = list(file_paths)
+            to_remove = []
+            tqdm.write("Force flag: full reindex.", file=sys.stderr)
+
+        if to_remove:
+            idx.delete_chunks_by_paths(to_remove)
+            idx.delete_file_metadata_by_paths(to_remove)
+            for path in to_remove:
+                del indexed_mtimes[path]
+            tqdm.write(f"Removed {len(to_remove)} deleted files from index.", file=sys.stderr)
+
+        if not to_reindex:
+            tqdm.write("No files to reindex.", file=sys.stderr)
             return
-        logger.info("Embedding %d chunks with model %s", len(chunks_flat), embed_model)
+
+        chunks_flat: list[Chunk] = []
+        with tqdm(
+            total=len(to_reindex),
+            desc="Parsing files",
+            unit="file",
+            file=sys.stderr,
+        ) as pbar:
+            for p in to_reindex:
+                rel, text = read_py_file(p, root)
+                source_bytes = text.encode("utf-8")
+                chunks_flat.extend(extract_chunks(rel, source_bytes))
+                idx.upsert_file_mtime(rel, p.stat().st_mtime, current_time)
+                pbar.update(1)
+
+        if not chunks_flat:
+            logger.warning("No chunks found in reindexed files")
+            return
+
+        tqdm.write(
+            f"Extracted {len(chunks_flat)} chunks from {len(to_reindex)} files. Embedding...",
+            file=sys.stderr,
+        )
         dim: int | None = None
-        for i in range(0, len(chunks_flat), cfg.embed_batch):
-            batch = chunks_flat[i : i + cfg.embed_batch]
-            texts = [c.text for c in batch]
-            vectors = client.embed(texts, embed_model)
-            if len(vectors) != len(batch):
-                raise RuntimeError("Embedding count mismatch")
-            for ch, vec in zip(batch, vectors, strict=True):
-                if dim is None:
-                    dim = len(vec)
-                elif len(vec) != dim:
-                    raise ValueError(f"Inconsistent embedding dimension: {len(vec)} vs {dim}")
-                idx.insert_chunk(ch, vec)
-            done = min(i + cfg.embed_batch, len(chunks_flat))
-            logger.info("Indexed %d / %d chunks", done, len(chunks_flat))
+        with tqdm(total=len(chunks_flat), desc="Embedding", unit="chunk", file=sys.stderr) as pbar:
+            for i in range(0, len(chunks_flat), cfg.embed_batch):
+                batch = chunks_flat[i : i + cfg.embed_batch]
+                texts = [c.text for c in batch]
+                vectors = client.embed(texts, embed_model)
+                if len(vectors) != len(batch):
+                    raise RuntimeError("Embedding count mismatch")
+                for ch, vec in zip(batch, vectors, strict=True):
+                    if dim is None:
+                        dim = len(vec)
+                    elif len(vec) != dim:
+                        raise ValueError(f"Inconsistent embedding dimension: {len(vec)} vs {dim}")
+                    idx.insert_chunk(ch, vec)
+                pbar.update(len(batch))
         if dim is not None:
             idx.set_meta("embed_dim", str(dim))
         idx.set_meta("embed_model", embed_model)
-        logger.info("Done. Rows in DB: %d", idx.chunk_count())
+        idx._conn.commit()
+
+        new_or_updated = len(to_reindex)
+        removed = len(to_remove)
+        total_chunks = idx.chunk_count()
+        tqdm.write(
+            f"Done. Indexed {new_or_updated} file(s), removed {removed} file(s), "
+            f"{unchanged_count} unchanged. Total chunks: {total_chunks}.",
+            file=sys.stderr,
+        )
     finally:
+        httpx_logger.setLevel(original_httpx_level)
         client.close()
         idx.close()
 
