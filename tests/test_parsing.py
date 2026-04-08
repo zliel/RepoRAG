@@ -18,6 +18,14 @@ def test_extract_chunks_sample_ok() -> None:
     assert ("login", 14) in names
 
 
+def test_extract_chunks_includes_language() -> None:
+    path = FIXTURES / "sample_ok.py"
+    source_bytes = path.read_bytes()
+    chunks = extract_chunks("sample_ok.py", source_bytes)
+    for ch in chunks:
+        assert ch.language == "python"
+
+
 def test_extract_chunks_from_file(tmp_path: Path) -> None:
     src = FIXTURES / "sample_ok.py"
     dst = tmp_path / "sample_ok.py"
@@ -25,6 +33,8 @@ def test_extract_chunks_from_file(tmp_path: Path) -> None:
     chunks = extract_chunks_from_file(dst, tmp_path)
     assert chunks is not None
     assert len(chunks) >= 4
+    for ch in chunks:
+        assert ch.language == "python"
 
 
 def test_broken_file_still_returns_chunks_or_none() -> None:
