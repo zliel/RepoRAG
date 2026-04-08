@@ -13,6 +13,7 @@ def test_build_context_block() -> None:
             start_line=10,
             end_line=12,
             text="class Foo:\n    pass\n",
+            language="python",
             score=0.9,
         )
     ]

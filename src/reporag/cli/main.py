@@ -16,7 +16,11 @@ from tqdm import tqdm
 
 from reporag.config import Config
 from reporag.indexing.store import open_index
-from reporag.ingestion.walker import read_py_file, walk_py_files
+from reporag.ingestion.walker import (
+    get_supported_extensions_display,
+    parse_file,
+    walk_supported_files,
+)
 from reporag.llm.backends import BackendType, LLMBackend, create_backend
 from reporag.llm.diagram import format_model_diagram_response
 from reporag.llm.prompts import (
@@ -26,7 +30,6 @@ from reporag.llm.prompts import (
     build_context_block,
     build_rag_user_content,
 )
-from reporag.parsing.python_chunks import extract_chunks
 from reporag.retrieval.context_files import (
     ContextSection,
     chunk_context_path,
@@ -37,7 +40,7 @@ from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="Local-first semantic Python codebase navigator (Ollama + SQLite).")
+app = typer.Typer(help="Local-first semantic codebase navigator with RAG (Ollama + SQLite).")
 
 
 @lru_cache
@@ -155,12 +158,13 @@ def _global(
 def cmd_list(
     root: Path = typer.Argument(..., exists=True, file_okay=False, help="Project root."),
 ) -> None:
-    """List all .py files under root."""
+    """List all supported files under root."""
     root = root.resolve()
-    paths = walk_py_files(root)
+    paths = walk_supported_files(root)
     for p in paths:
         typer.echo(p.relative_to(root).as_posix())
-    logger.info("Found %d Python files", len(paths))
+    ext_display = get_supported_extensions_display()
+    logger.info("Found %d supported files (%s)", len(paths), ext_display)
     typer.echo(f"Total: {len(paths)}", err=True)
 
 
@@ -171,15 +175,14 @@ def cmd_chunks(
     """Extract function/class chunks and print JSON lines."""
     root = root.resolve()
     total = 0
-    for p in walk_py_files(root):
-        rel, text = read_py_file(p, root)
-        source_bytes = text.encode("utf-8")
-        for ch in extract_chunks(rel, source_bytes):
+    for p in walk_supported_files(root):
+        for ch in parse_file(p, root):
             typer.echo(
                 json.dumps(
                     {
                         "path": ch.path,
                         "symbol": ch.symbol_name,
+                        "language": ch.language,
                         "start_line": ch.start_line,
                         "end_line": ch.end_line,
                         "text_len": len(ch.text),
@@ -209,7 +212,7 @@ def cmd_index(
         help="Force full reindex: clear DB and reindex all files.",
     ),
 ) -> None:
-    """Build embedding index for all Python chunks (incremental by default)."""
+    """Build embedding index for all supported source files (incremental by default)."""
     cfg = get_config()
     root = root.resolve()
     db = db or Path(cfg.db)
@@ -230,7 +233,7 @@ def cmd_index(
             indexed_mtimes = idx.get_all_file_mtimes()
 
         tqdm.write("Discovering files...", file=sys.stderr)
-        file_paths = walk_py_files(root)
+        file_paths = walk_supported_files(root)
 
         to_reindex: list[Path] = []
         to_remove: list[str] = []
@@ -254,9 +257,11 @@ def cmd_index(
                 to_remove.append(rel)
 
         total_files = len(file_paths)
+        ext_display = get_supported_extensions_display()
         tqdm.write(
-            f"Found {total_files} Python files: "
-            f"{unchanged_count} unchanged, {len(to_reindex)} to reindex, {len(to_remove)} to remove.",
+            f"Found {total_files} supported files ({ext_display}): "
+            f"{unchanged_count} unchanged, "
+            f"{len(to_reindex)} to reindex, {len(to_remove)} to remove.",
             file=sys.stderr,
         )
 
@@ -285,9 +290,9 @@ def cmd_index(
             file=sys.stderr,
         ) as pbar:
             for p in to_reindex:
-                rel, text = read_py_file(p, root)
-                source_bytes = text.encode("utf-8")
-                chunks_flat.extend(extract_chunks(rel, source_bytes))
+                chunks = parse_file(p, root)
+                chunks_flat.extend(chunks)
+                rel = p.relative_to(root).as_posix()
                 idx.upsert_file_mtime(rel, p.stat().st_mtime, current_time)
                 pbar.update(1)
 
@@ -295,8 +300,13 @@ def cmd_index(
             logger.warning("No chunks found in reindexed files")
             return
 
+        lang_counts: dict[str, int] = {}
+        for ch in chunks_flat:
+            lang_counts[ch.language] = lang_counts.get(ch.language, 0) + 1
+
         tqdm.write(
-            f"Extracted {len(chunks_flat)} chunks from {len(to_reindex)} files. Embedding...",
+            f"Extracted {len(chunks_flat)} chunks from {len(to_reindex)} files "
+            f"({', '.join(f'{k}:{v}' for k, v in sorted(lang_counts.items()))}). Embedding...",
             file=sys.stderr,
         )
         dim: int | None = None

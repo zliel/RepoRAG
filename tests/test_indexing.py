@@ -23,6 +23,7 @@ def test_chunk_index_roundtrip(db_path: Path) -> None:
             start_line=1,
             end_line=3,
             text="def f():\n  pass\n",
+            language="python",
         )
         vec = [1.0, 0.0, 0.0]
         idx.insert_chunk(ch, vec)
@@ -33,6 +34,7 @@ def test_chunk_index_roundtrip(db_path: Path) -> None:
         assert mat.shape == (1, 3)
         assert meta[0]["path"] == "a.py"
         assert meta[0]["symbol"] == "f"
+        assert meta[0]["language"] == "python"
     finally:
         idx.close()
 
@@ -61,9 +63,30 @@ def test_delete_chunks_by_paths(db_path: Path) -> None:
     idx = open_index(db_path)
     try:
         idx.clear()
-        ch1 = Chunk(path="a.py", symbol_name="f", start_line=1, end_line=3, text="def f(): pass")
-        ch2 = Chunk(path="b.py", symbol_name="g", start_line=1, end_line=3, text="def g(): pass")
-        ch3 = Chunk(path="a.py", symbol_name="h", start_line=5, end_line=7, text="def h(): pass")
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="f",
+            start_line=1,
+            end_line=3,
+            text="def f(): pass",
+            language="python",
+        )
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="g",
+            start_line=1,
+            end_line=3,
+            text="def g(): pass",
+            language="python",
+        )
+        ch3 = Chunk(
+            path="a.py",
+            symbol_name="h",
+            start_line=5,
+            end_line=7,
+            text="def h(): pass",
+            language="python",
+        )
         vec = [1.0, 0.0, 0.0]
         idx.insert_chunk(ch1, vec)
         idx.insert_chunk(ch2, vec)
