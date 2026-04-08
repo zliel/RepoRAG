@@ -13,6 +13,7 @@ class RetrievedChunk:
     start_line: int
     end_line: int
     text: str
+    language: str
     score: float
 
 
@@ -51,6 +52,7 @@ def top_k_similar(
                 start_line=int(m["start_line"]),
                 end_line=int(m["end_line"]),
                 text=str(m["text"]),
+                language=str(m.get("language", "python")),
                 score=float(scores[int(i)]),
             )
         )

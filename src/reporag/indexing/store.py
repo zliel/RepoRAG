@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import struct
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 import numpy as np
 
 from reporag.types import Chunk
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -20,6 +23,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     start_line INTEGER NOT NULL,
     end_line INTEGER NOT NULL,
     text TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT 'python',
     embedding BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS file_metadata (
@@ -51,7 +55,18 @@ class ChunkIndex:
 
     def _ensure_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
+        self._migrate_language_column()
         self._conn.commit()
+
+    def _migrate_language_column(self) -> None:
+        columns = self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        column_names = {col[1] for col in columns}
+        if "language" not in column_names:
+            self._conn.execute(
+                "ALTER TABLE chunks ADD COLUMN language TEXT NOT NULL DEFAULT 'python'"
+            )
+            logger = logging.getLogger(__name__)
+            logger.info("Migrated chunks table: added 'language' column")
 
     def close(self) -> None:
         self._conn.close()
@@ -111,8 +126,8 @@ class ChunkIndex:
         blob = _float32_blob(embedding)
         cur = self._conn.execute(
             """
-            INSERT INTO chunks(path, symbol, start_line, end_line, text, embedding)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO chunks(path, symbol, start_line, end_line, text, language, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 chunk.path,
@@ -120,6 +135,7 @@ class ChunkIndex:
                 chunk.start_line,
                 chunk.end_line,
                 chunk.text,
+                chunk.language,
                 blob,
             ),
         )
@@ -133,10 +149,11 @@ class ChunkIndex:
     def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, str | int]]]:
         """
         Load all rows: returns (matrix float32 [n, dim], metadata list aligned with rows).
-        Each metadata dict: id, path, symbol, start_line, end_line, text.
+        Each metadata dict: id, path, symbol, start_line, end_line, text, language.
         """
         rows = self._conn.execute(
-            "SELECT id, path, symbol, start_line, end_line, text, embedding FROM chunks ORDER BY id"
+            "SELECT id, path, symbol, start_line, end_line, text, language, embedding "
+            "FROM chunks ORDER BY id"
         ).fetchall()
         if not rows:
             return np.zeros((0, 0), dtype=np.float32), []
@@ -144,7 +161,7 @@ class ChunkIndex:
         embeddings: list[np.ndarray] = []
         meta: list[dict[str, str | int]] = []
         dim: int | None = None
-        for rid, path, symbol, sl, el, text, emb_blob in rows:
+        for rid, path, symbol, sl, el, text, language, emb_blob in rows:
             v = _blob_to_float32(emb_blob)
             if dim is None:
                 dim = int(v.shape[0])
@@ -159,6 +176,7 @@ class ChunkIndex:
                     "start_line": int(sl),
                     "end_line": int(el),
                     "text": str(text),
+                    "language": str(language),
                 }
             )
         mat = np.stack(embeddings, axis=0).astype(np.float32, copy=False)
