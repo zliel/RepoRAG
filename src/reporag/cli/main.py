@@ -211,6 +211,11 @@ def cmd_index(
         "-f",
         help="Force full reindex: clear DB and reindex all files.",
     ),
+    graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Build code graph (imports/calls) for graph-based retrieval.",
+    ),
 ) -> None:
     """Build embedding index for all supported source files (incremental by default)."""
     cfg = get_config()
@@ -332,6 +337,31 @@ def cmd_index(
         new_or_updated = len(to_reindex)
         removed = len(to_remove)
         total_chunks = idx.chunk_count()
+
+        # Build code graph if requested
+        if graph and total_chunks > 0:
+            tqdm.write("Building code graph...", file=sys.stderr)
+            # Re-load chunks with source text
+            source_map: dict[str, str] = {}
+            for p in file_paths:
+                try:
+                    rel = p.relative_to(root).as_posix()
+                    source_map[rel] = p.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("Failed to read %s: %s", p, e)
+
+            # Update chunks with source text
+            for rel, source in source_map.items():
+                idx._conn.execute(
+                    "UPDATE chunks SET source_text = ? WHERE path = ?",
+                    (source, rel),
+                )
+            idx._conn.commit()
+
+            # Build graph
+            edge_count = idx.build_code_graph(base_path=root)
+            tqdm.write(f"Built code graph with {edge_count} edges.", file=sys.stderr)
+
         tqdm.write(
             f"Done. Indexed {new_or_updated} file(s), removed {removed} file(s), "
             f"{unchanged_count} unchanged. Total chunks: {total_chunks}.",
@@ -352,6 +382,12 @@ def cmd_search(
     k: int = typer.Option(8, "-k", "--top-k", help="Number of chunks to retrieve."),
     embed_model: str | None = typer.Option(None, "--embed-model", help="Embedding model."),
     backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
+    use_graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Use graph-based retrieval to find related chunks.",
+    ),
 ) -> None:
     """Retrieve top-k chunks for a query."""
     cfg = get_config()
@@ -373,20 +409,50 @@ def cmd_search(
         vecs = client.embed([query], embed_model)
         q = np.array(vecs[0], dtype=np.float32)
         hits = top_k_similar(q, mat, meta, k)
+
+        # Optionally enhance with graph-based related chunks
+        if use_graph:
+            from reporag.indexing.store import ChunkIndex
+
+            idx_for_graph = open_index(db)
+            try:
+                # Add related chunks from graph
+                graph_related: list[RetrievedChunk] = []
+                for h in hits[:3]:  # Get related for top 3 semantic hits
+                    related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
+                    for rel in related:
+                        # Check if not already in hits
+                        if not any(r.chunk_id == rel["id"] for r in hits):
+                            graph_related.append(
+                                RetrievedChunk(
+                                    chunk_id=rel["id"],
+                                    path=rel["path"],
+                                    symbol=rel["symbol"],
+                                    start_line=rel["start_line"],
+                                    end_line=rel["end_line"],
+                                    text=rel["text"],
+                                    language=rel["language"],
+                                    score=h.score * 0.9,  # Slightly lower score
+                                    canonical_id=None,
+                                    aliases=(),
+                                )
+                            )
+                hits = list(hits) + graph_related
+            finally:
+                idx_for_graph.close()
+
         for h in hits:
-            typer.echo(
-                json.dumps(
-                    {
-                        "score": round(h.score, 6),
-                        "path": h.path,
-                        "symbol": h.symbol,
-                        "start_line": h.start_line,
-                        "end_line": h.end_line,
-                        "preview": h.text[:200] + ("…" if len(h.text) > 200 else ""),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            output: dict[str, object] = {
+                "score": round(h.score, 6),
+                "path": h.path,
+                "symbol": h.symbol,
+                "start_line": h.start_line,
+                "end_line": h.end_line,
+                "preview": h.text[:200] + ("…" if len(h.text) > 200 else ""),
+            }
+            if not quiet and h.aliases:
+                output["also_in"] = list(h.aliases)
+            typer.echo(json.dumps(output, ensure_ascii=False))
     finally:
         client.close()
 
@@ -413,6 +479,12 @@ def cmd_ask(
     ),
     stream: bool | None = typer.Option(
         None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
+    ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
+    use_graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Use graph-based retrieval to find related chunks.",
     ),
 ) -> None:
     """Answer using retrieved context and LLM chat."""
@@ -441,6 +513,35 @@ def cmd_ask(
         if not hits:
             typer.echo("No chunks retrieved.", err=True)
             raise typer.Exit(1)
+
+        # Optionally enhance with graph-based related chunks
+        if use_graph:
+            idx_for_graph = open_index(db)
+            try:
+                graph_related: list[RetrievedChunk] = []
+                for h in hits[:3]:  # Get related for top 3 semantic hits
+                    related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
+                    for rel in related:
+                        # Check if not already in hits
+                        if not any(r.chunk_id == rel["id"] for r in hits):
+                            graph_related.append(
+                                RetrievedChunk(
+                                    chunk_id=rel["id"],
+                                    path=rel["path"],
+                                    symbol=rel["symbol"],
+                                    start_line=rel["start_line"],
+                                    end_line=rel["end_line"],
+                                    text=rel["text"],
+                                    language=rel["language"],
+                                    score=h.score * 0.9,  # Slightly lower score
+                                    canonical_id=None,
+                                    aliases=(),
+                                )
+                            )
+                hits = list(hits) + graph_related
+            finally:
+                idx_for_graph.close()
+
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
         messages = [
@@ -464,7 +565,10 @@ def cmd_ask(
             typer.echo(answer)
         typer.echo("\n---\nSources:", err=True)
         for h in hits:
-            typer.echo(f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})", err=True)
+            source_line = f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})"
+            if not quiet and h.aliases:
+                source_line += f" (also in: {', '.join(h.aliases)})"
+            typer.echo(source_line, err=True)
     finally:
         client.close()
 
@@ -506,6 +610,7 @@ def cmd_diagram(
     stream: bool | None = typer.Option(
         None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
     ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
 ) -> None:
     """Generate a grounded Mermaid diagram from retrieved code context."""
     if stream is None:
@@ -595,7 +700,10 @@ def cmd_diagram(
 
         typer.echo("\n---\nSources:", err=True)
         for h in hits:
-            typer.echo(f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})", err=True)
+            source_line = f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})"
+            if not quiet and h.aliases:
+                source_line += f" (also in: {', '.join(h.aliases)})"
+            typer.echo(source_line, err=True)
     finally:
         client.close()
 
