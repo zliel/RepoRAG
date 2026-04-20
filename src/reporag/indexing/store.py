@@ -1,15 +1,55 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sqlite3
 import struct
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
+
+# Regex patterns for fuzzy text normalization
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_SINGLE_LINE_COMMENT_PATTERN = re.compile(r"#.*$", re.MULTILINE)
+_DOCSTRING_QUOTE_PATTERN = re.compile(r'(""".*?"""|\'\'\'.*?\'\'\')', re.DOTALL)
+_DOCSTRING_HASH_PATTERN = re.compile(r'""".*?"""|\'\'\'.*?\'\'\'', re.DOTALL)
+
+
+def _fuzzy_hash(text: str) -> str:
+    """
+    Normalize text for fuzzy deduplication.
+
+    Removes:
+    - All whitespace sequences (collapses to single spaces)
+    - Single-line Python comments (# ...)
+    - Triple-quoted docstrings (double and single quotes)
+    - Empty/parens-only bodies like: pass, ..., )
+
+    Returns lowercase stripped string for comparison.
+    """
+    if not text:
+        return ""
+
+    # Step 1: Remove docstring quote characters first
+    normalized = _DOCSTRING_QUOTE_PATTERN.sub("", text)
+
+    # Step 2: Remove single-line comments
+    normalized = _SINGLE_LINE_COMMENT_PATTERN.sub("", normalized)
+
+    # Step 3: Collapse all whitespace to single space
+    normalized = _WHITESPACE_PATTERN.sub(" ", normalized)
+
+    # Step 4: Strip and lowercase
+    normalized = normalized.strip().lower()
+
+    return normalized
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -24,7 +64,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     end_line INTEGER NOT NULL,
     text TEXT NOT NULL,
     language TEXT NOT NULL DEFAULT 'python',
-    embedding BLOB NOT NULL
+    embedding BLOB NOT NULL,
+    canonical_id TEXT NOT NULL DEFAULT '',
+    aliases TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS file_metadata (
     path TEXT PRIMARY KEY,
@@ -32,6 +74,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     indexed_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
+CREATE INDEX IF NOT EXISTS idx_chunks_canonical_id ON chunks(canonical_id);
 """
 
 
@@ -56,6 +99,8 @@ class ChunkIndex:
     def _ensure_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
         self._migrate_language_column()
+        self._migrate_canonical_id_column()
+        self._migrate_aliases_column()
         self._conn.commit()
 
     def _migrate_language_column(self) -> None:
@@ -67,6 +112,51 @@ class ChunkIndex:
             )
             logger = logging.getLogger(__name__)
             logger.info("Migrated chunks table: added 'language' column")
+
+    def _migrate_canonical_id_column(self) -> None:
+        columns = self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        column_names = {col[1] for col in columns}
+        if "canonical_id" not in column_names:
+            self._conn.execute(
+                "ALTER TABLE chunks ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''"
+            )
+            logger = logging.getLogger(__name__)
+            logger.info("Migrated chunks table: added 'canonical_id' column")
+
+    def _migrate_aliases_column(self) -> None:
+        columns = self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        column_names = {col[1] for col in columns}
+        if "aliases" not in column_names:
+            self._conn.execute("ALTER TABLE chunks ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'")
+            logger = logging.getLogger(__name__)
+            logger.info("Migrated chunks table: added 'aliases' column")
+
+    def find_canonical_chunk(self, text: str) -> str | None:
+        """
+        Find an existing canonical chunk that matches the given text using fuzzy hashing.
+
+        A chunk is considered a match if its fuzzy hash equals the fuzzy hash of the
+        provided text.
+
+        Args:
+            text: The text content to match against existing chunks.
+
+        Returns:
+            The canonical_id of the matching canonical chunk, or None if no match found.
+        """
+        target_hash = _fuzzy_hash(text)
+        if not target_hash:
+            return None
+
+        # Get all canonical chunks (where canonical_id is empty - they're the canonical)
+        rows = self._conn.execute("SELECT id, text FROM chunks WHERE canonical_id = ''").fetchall()
+
+        for row in rows:
+            row_id, row_text = row
+            if _fuzzy_hash(row_text) == target_hash:
+                return str(row_id)
+
+        return None
 
     def close(self) -> None:
         self._conn.close()
@@ -123,45 +213,113 @@ class ChunkIndex:
         chunk: Chunk,
         embedding: list[float],
     ) -> int:
+        """
+        Insert a chunk into the index with fuzzy deduplication.
+
+        If a matching canonical chunk exists (fuzzy hash match), inserts this
+        chunk as an alias referencing the canonical. Otherwise, inserts as a new
+        canonical chunk.
+        """
+        # Check for existing canonical using fuzzy matching
+        canonical_id = self.find_canonical_chunk(chunk.text)
+
         blob = _float32_blob(embedding)
-        cur = self._conn.execute(
-            """
-            INSERT INTO chunks(path, symbol, start_line, end_line, text, language, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                chunk.path,
-                chunk.symbol_name,
-                chunk.start_line,
-                chunk.end_line,
-                chunk.text,
-                chunk.language,
-                blob,
-            ),
-        )
+
+        if canonical_id:
+            # Found duplicate - insert as alias referencing canonical
+            # Add current path to canonical's aliases list
+            self._add_alias_to_canonical(canonical_id, chunk.path)
+
+            cur = self._conn.execute(
+                """
+                INSERT INTO chunks(path, symbol, start_line, end_line, text, language, embedding, canonical_id, aliases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk.path,
+                    chunk.symbol_name,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.text,
+                    chunk.language,
+                    blob,
+                    canonical_id,
+                    json.dumps([]),  # Aliases empty for alias chunks
+                ),
+            )
+        else:
+            # No duplicate found - insert as new canonical
+            canonical_id_str = ""
+
+            cur = self._conn.execute(
+                """
+                INSERT INTO chunks(path, symbol, start_line, end_line, text, language, embedding, canonical_id, aliases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk.path,
+                    chunk.symbol_name,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.text,
+                    chunk.language,
+                    blob,
+                    canonical_id_str,
+                    json.dumps([chunk.path]),  # Canonical's aliases include its own path
+                ),
+            )
+
         self._conn.commit()
         return int(cur.lastrowid)
+
+    def _add_alias_to_canonical(self, canonical_id: str, new_alias_path: str) -> None:
+        """
+        Add a new alias path to a canonical chunk's aliases list.
+
+        Args:
+            canonical_id: The database id of the canonical chunk.
+            new_alias_path: The file path to add as an alias.
+        """
+        # Get current aliases
+        row = self._conn.execute(
+            "SELECT aliases FROM chunks WHERE id = ?",
+            (canonical_id,),
+        ).fetchone()
+
+        if not row:
+            return
+
+        aliases: list[str] = json.loads(row[0]) if row[0] else []
+
+        # Add new alias if not already present
+        if new_alias_path not in aliases:
+            aliases.append(new_alias_path)
+            self._conn.execute(
+                "UPDATE chunks SET aliases = ? WHERE id = ?",
+                (json.dumps(aliases), canonical_id),
+            )
 
     def chunk_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
         return int(row[0]) if row else 0
 
-    def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, str | int]]]:
+    def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
         """
         Load all rows: returns (matrix float32 [n, dim], metadata list aligned with rows).
-        Each metadata dict: id, path, symbol, start_line, end_line, text, language.
+        Each metadata dict: id, path, symbol, start_line, end_line, text, language, canonical_id, aliases.
         """
         rows = self._conn.execute(
-            "SELECT id, path, symbol, start_line, end_line, text, language, embedding "
+            "SELECT id, path, symbol, start_line, end_line, text, language, embedding, canonical_id, aliases "
             "FROM chunks ORDER BY id"
         ).fetchall()
         if not rows:
             return np.zeros((0, 0), dtype=np.float32), []
 
         embeddings: list[np.ndarray] = []
-        meta: list[dict[str, str | int]] = []
+        meta: list[dict[str, Any]] = []
         dim: int | None = None
-        for rid, path, symbol, sl, el, text, language, emb_blob in rows:
+        for row in rows:
+            rid, path, symbol, sl, el, text, language, emb_blob, canonical_id, aliases_json = row
             v = _blob_to_float32(emb_blob)
             if dim is None:
                 dim = int(v.shape[0])
@@ -177,6 +335,8 @@ class ChunkIndex:
                     "end_line": int(el),
                     "text": str(text),
                     "language": str(language),
+                    "canonical_id": str(canonical_id),
+                    "aliases": json.loads(aliases_json) if aliases_json else [],
                 }
             )
         mat = np.stack(embeddings, axis=0).astype(np.float32, copy=False)

@@ -352,6 +352,7 @@ def cmd_search(
     k: int = typer.Option(8, "-k", "--top-k", help="Number of chunks to retrieve."),
     embed_model: str | None = typer.Option(None, "--embed-model", help="Embedding model."),
     backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
 ) -> None:
     """Retrieve top-k chunks for a query."""
     cfg = get_config()
@@ -374,19 +375,17 @@ def cmd_search(
         q = np.array(vecs[0], dtype=np.float32)
         hits = top_k_similar(q, mat, meta, k)
         for h in hits:
-            typer.echo(
-                json.dumps(
-                    {
-                        "score": round(h.score, 6),
-                        "path": h.path,
-                        "symbol": h.symbol,
-                        "start_line": h.start_line,
-                        "end_line": h.end_line,
-                        "preview": h.text[:200] + ("…" if len(h.text) > 200 else ""),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            output: dict[str, object] = {
+                "score": round(h.score, 6),
+                "path": h.path,
+                "symbol": h.symbol,
+                "start_line": h.start_line,
+                "end_line": h.end_line,
+                "preview": h.text[:200] + ("…" if len(h.text) > 200 else ""),
+            }
+            if not quiet and h.aliases:
+                output["also_in"] = list(h.aliases)
+            typer.echo(json.dumps(output, ensure_ascii=False))
     finally:
         client.close()
 
@@ -414,6 +413,7 @@ def cmd_ask(
     stream: bool | None = typer.Option(
         None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
     ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
 ) -> None:
     """Answer using retrieved context and LLM chat."""
     if stream is None:
@@ -464,7 +464,10 @@ def cmd_ask(
             typer.echo(answer)
         typer.echo("\n---\nSources:", err=True)
         for h in hits:
-            typer.echo(f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})", err=True)
+            source_line = f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})"
+            if not quiet and h.aliases:
+                source_line += f" (also in: {', '.join(h.aliases)})"
+            typer.echo(source_line, err=True)
     finally:
         client.close()
 
@@ -506,6 +509,7 @@ def cmd_diagram(
     stream: bool | None = typer.Option(
         None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
     ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
 ) -> None:
     """Generate a grounded Mermaid diagram from retrieved code context."""
     if stream is None:
@@ -595,7 +599,10 @@ def cmd_diagram(
 
         typer.echo("\n---\nSources:", err=True)
         for h in hits:
-            typer.echo(f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})", err=True)
+            source_line = f"  {h.path} lines {h.start_line}-{h.end_line} ({h.symbol})"
+            if not quiet and h.aliases:
+                source_line += f" (also in: {', '.join(h.aliases)})"
+            typer.echo(source_line, err=True)
     finally:
         client.close()
 
