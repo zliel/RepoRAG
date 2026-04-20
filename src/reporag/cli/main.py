@@ -226,6 +226,11 @@ def cmd_index(
         "-f",
         help="Force full reindex: clear DB and reindex all files.",
     ),
+    graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Build code graph (imports/calls) for graph-based retrieval.",
+    ),
 ) -> None:
     """Build embedding index for all supported source files (incremental by default)."""
     cfg = get_config()
@@ -347,6 +352,31 @@ def cmd_index(
         new_or_updated = len(to_reindex)
         removed = len(to_remove)
         total_chunks = idx.chunk_count()
+
+        # Build code graph if requested
+        if graph and total_chunks > 0:
+            tqdm.write("Building code graph...", file=sys.stderr)
+            # Re-load chunks with source text
+            source_map: dict[str, str] = {}
+            for p in file_paths:
+                try:
+                    rel = p.relative_to(root).as_posix()
+                    source_map[rel] = p.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning("Failed to read %s: %s", p, e)
+
+            # Update chunks with source text
+            for rel, source in source_map.items():
+                idx._conn.execute(
+                    "UPDATE chunks SET source_text = ? WHERE path = ?",
+                    (source, rel),
+                )
+            idx._conn.commit()
+
+            # Build graph
+            edge_count = idx.build_code_graph(base_path=root)
+            tqdm.write(f"Built code graph with {edge_count} edges.", file=sys.stderr)
+
         tqdm.write(
             f"Done. Indexed {new_or_updated} file(s), removed {removed} file(s), "
             f"{unchanged_count} unchanged. Total chunks: {total_chunks}.",
@@ -371,6 +401,11 @@ def cmd_search(
         False, "--no-hybrid", help="Use vector search only, skip FTS5 hybrid."
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
+    use_graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Use graph-based retrieval to find related chunks.",
+    ),
 ) -> None:
     """Retrieve top-k chunks for a query."""
     cfg = get_config()
@@ -391,7 +426,6 @@ def cmd_search(
             logger.warning("Index built with %s; query uses %s", stored_model, embed_model)
         vecs = client.embed([query], embed_model)
         q = np.array(vecs[0], dtype=np.float32)
-
         if no_hybrid:
             hits = top_k_similar(q, mat, meta, k)
         else:
@@ -402,6 +436,37 @@ def cmd_search(
             finally:
                 idx.close()
             hits = hybrid_search(q, mat, meta, fts_results, k)
+
+        # Optionally enhance with graph-based related chunks
+        if use_graph:
+            from reporag.indexing.store import ChunkIndex
+
+            idx_for_graph = open_index(db)
+            try:
+                # Add related chunks from graph
+                graph_related: list[RetrievedChunk] = []
+                for h in hits[:3]:  # Get related for top 3 semantic hits
+                    related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
+                    for rel in related:
+                        # Check if not already in hits
+                        if not any(r.chunk_id == rel["id"] for r in hits):
+                            graph_related.append(
+                                RetrievedChunk(
+                                    chunk_id=rel["id"],
+                                    path=rel["path"],
+                                    symbol=rel["symbol"],
+                                    start_line=rel["start_line"],
+                                    end_line=rel["end_line"],
+                                    text=rel["text"],
+                                    language=rel["language"],
+                                    score=h.score * 0.9,  # Slightly lower score
+                                    canonical_id=None,
+                                    aliases=(),
+                                )
+                            )
+                hits = list(hits) + graph_related
+            finally:
+                idx_for_graph.close()
 
         for h in hits:
             output: dict[str, object] = {
@@ -446,6 +511,11 @@ def cmd_ask(
         None, "--stream/--no-stream", help="Stream tokens to stdout (default: auto-detect TTY)."
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
+    use_graph: bool = typer.Option(
+        False,
+        "--graph/--no-graph",
+        help="Use graph-based retrieval to find related chunks.",
+    ),
 ) -> None:
     """Answer using retrieved context and LLM chat."""
     if stream is None:
@@ -473,6 +543,35 @@ def cmd_ask(
         if not hits:
             typer.echo("No chunks retrieved.", err=True)
             raise typer.Exit(1)
+
+        # Optionally enhance with graph-based related chunks
+        if use_graph:
+            idx_for_graph = open_index(db)
+            try:
+                graph_related: list[RetrievedChunk] = []
+                for h in hits[:3]:  # Get related for top 3 semantic hits
+                    related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
+                    for rel in related:
+                        # Check if not already in hits
+                        if not any(r.chunk_id == rel["id"] for r in hits):
+                            graph_related.append(
+                                RetrievedChunk(
+                                    chunk_id=rel["id"],
+                                    path=rel["path"],
+                                    symbol=rel["symbol"],
+                                    start_line=rel["start_line"],
+                                    end_line=rel["end_line"],
+                                    text=rel["text"],
+                                    language=rel["language"],
+                                    score=h.score * 0.9,  # Slightly lower score
+                                    canonical_id=None,
+                                    aliases=(),
+                                )
+                            )
+                hits = list(hits) + graph_related
+            finally:
+                idx_for_graph.close()
+
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
         messages = [
