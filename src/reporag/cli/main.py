@@ -35,7 +35,7 @@ from reporag.retrieval.context_files import (
     chunk_context_path,
     retrieve_context_sections,
 )
-from reporag.retrieval.search import RetrievedChunk, top_k_similar
+from reporag.retrieval.search import RetrievedChunk, top_k_similar, hybrid_search
 from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
@@ -95,9 +95,13 @@ def _retrieve_hits(
     chat_model: str,
     no_rewrite: bool,
     temperature: float | None = None,
+    no_hybrid: bool = False,
 ) -> tuple[list[RetrievedChunk], str]:
     """
     Open index, optional rewrite, embed search string, return top-k chunks and search_query used.
+
+    Args:
+        no_hybrid: If True, skip FTS5 hybrid and use vector-only search.
     """
     idx = open_index(db)
     try:
@@ -129,7 +133,18 @@ def _retrieve_hits(
 
     vecs = client.embed([search_query], embed_model)
     q = np.array(vecs[0], dtype=np.float32)
-    hits = top_k_similar(q, mat, meta, k)
+
+    if no_hybrid:
+        hits = top_k_similar(q, mat, meta, k)
+    else:
+        # Hybrid search: get FTS5 results and combine with RRF
+        idx = open_index(db)
+        try:
+            fts_results = idx.search_fts(search_query, k * 2)
+        finally:
+            idx.close()
+        hits = hybrid_search(q, mat, meta, fts_results, k)
+
     return hits, search_query
 
 
@@ -382,6 +397,9 @@ def cmd_search(
     k: int = typer.Option(8, "-k", "--top-k", help="Number of chunks to retrieve."),
     embed_model: str | None = typer.Option(None, "--embed-model", help="Embedding model."),
     backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
+    no_hybrid: bool = typer.Option(
+        False, "--no-hybrid", help="Use vector search only, skip FTS5 hybrid."
+    ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Hide duplicate location info."),
     use_graph: bool = typer.Option(
         False,
@@ -408,7 +426,16 @@ def cmd_search(
             logger.warning("Index built with %s; query uses %s", stored_model, embed_model)
         vecs = client.embed([query], embed_model)
         q = np.array(vecs[0], dtype=np.float32)
-        hits = top_k_similar(q, mat, meta, k)
+        if no_hybrid:
+            hits = top_k_similar(q, mat, meta, k)
+        else:
+            # Hybrid search: get FTS5 results and combine with RRF
+            idx = open_index(db)
+            try:
+                fts_results = idx.search_fts(query, k * 2)
+            finally:
+                idx.close()
+            hits = hybrid_search(q, mat, meta, fts_results, k)
 
         # Optionally enhance with graph-based related chunks
         if use_graph:
@@ -468,6 +495,9 @@ def cmd_ask(
     chat_model: str | None = typer.Option(None, "--chat-model"),
     backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip query rewrite step."),
+    no_hybrid: bool = typer.Option(
+        False, "--no-hybrid", help="Use vector search only, skip FTS5 hybrid."
+    ),
     context_file: Path | None = typer.Option(
         None,
         "--context",
@@ -508,7 +538,7 @@ def cmd_ask(
             )
     try:
         hits, _ = _retrieve_hits(
-            client, query, db, k, embed_model, chat_model, no_rewrite, temperature
+            client, query, db, k, embed_model, chat_model, no_rewrite, temperature, no_hybrid
         )
         if not hits:
             typer.echo("No chunks retrieved.", err=True)
@@ -584,6 +614,9 @@ def cmd_diagram(
     chat_model: str | None = typer.Option(None, "--chat-model"),
     backend: BackendType | None = typer.Option(None, "--backend", help="LLM backend."),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip query rewrite step."),
+    no_hybrid: bool = typer.Option(
+        False, "--no-hybrid", help="Use vector search only, skip FTS5 hybrid."
+    ),
     out: Path | None = typer.Option(
         None,
         "--out",
@@ -633,7 +666,7 @@ def cmd_diagram(
             )
     try:
         hits, _ = _retrieve_hits(
-            client, query, db, k, embed_model, chat_model, no_rewrite, temperature
+            client, query, db, k, embed_model, chat_model, no_rewrite, temperature, no_hybrid
         )
         if not hits:
             typer.echo("No chunks retrieved.", err=True)

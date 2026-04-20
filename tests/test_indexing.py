@@ -157,3 +157,226 @@ def test_delete_file_metadata_by_paths(db_path: Path) -> None:
         assert len(idx.get_all_file_mtimes()) == 1
     finally:
         idx.close()
+
+
+def test_fuzzy_hash_basic(tmp_path: Path) -> None:
+    from reporag.indexing.store import _fuzzy_hash
+
+    # Test basic normalization - collapse multiple whitespaces, strip
+    assert _fuzzy_hash("def foo():\n    pass") == _fuzzy_hash("def foo():\n  pass")
+    # Should strip and lowercase
+    assert _fuzzy_hash("DEF FOO():\n    PASS") == "def foo(): pass"
+
+
+def test_fuzzy_hash_removes_comments(tmp_path: Path) -> None:
+    from reporag.indexing.store import _fuzzy_hash
+
+    # Should remove comments
+    text_with_comment = "def foo():\n    x = 1  # comment"
+    text_without = "def foo():\n    x = 1"
+    assert _fuzzy_hash(text_with_comment) == _fuzzy_hash(text_without)
+
+
+def test_fuzzy_hash_removes_docstrings(tmp_path: Path) -> None:
+    from reporag.indexing.store import _fuzzy_hash
+
+    # Should remove triple-quoted docstrings
+    text_with_docstring = 'def foo():\n    """docstring"""\n    pass'
+    text_without = "def foo():\n    pass"
+    assert _fuzzy_hash(text_with_docstring) == _fuzzy_hash(text_without)
+
+
+def test_fuzzy_hash_case_insensitive(tmp_path: Path) -> None:
+    from reporag.indexing.store import _fuzzy_hash
+
+    assert _fuzzy_hash("DEF FOO():\n    PASS") == _fuzzy_hash("def foo():\n    pass")
+
+
+def test_find_canonical_chunk_exact_match(db_path: Path) -> None:
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        vec = [1.0, 0.0, 0.0]
+
+        # Insert first chunk (becomes canonical)
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="foo",
+            start_line=1,
+            end_line=3,
+            text="def foo():\n    pass",
+            language="python",
+        )
+        idx.insert_chunk(ch1, vec)
+
+        # Insert duplicate (different path, same text)
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="foo",
+            start_line=1,
+            end_line=3,
+            text="def foo():\n    pass",
+            language="python",
+        )
+        idx.insert_chunk(ch2, vec)
+
+        # Should only have 2 rows but the second should reference the first as canonical
+        assert idx.chunk_count() == 2
+        mat, meta = idx.load_embeddings_matrix()
+
+        # First chunk is canonical (canonical_id = "")
+        assert meta[0]["canonical_id"] == ""
+        # Second chunk references first as canonical
+        assert meta[1]["canonical_id"] == "1"
+    finally:
+        idx.close()
+
+
+def test_insert_canonical_and_alias_paths(db_path: Path) -> None:
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        vec = [1.0, 0.0, 0.0]
+
+        # Insert first chunk
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="foo",
+            start_line=1,
+            end_line=3,
+            text="def foo():\n    pass",
+            language="python",
+        )
+        idx.insert_chunk(ch1, vec)
+
+        # Insert duplicate in different path
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="foo",
+            start_line=1,
+            end_line=3,
+            text="def foo():\n    pass",
+            language="python",
+        )
+        idx.insert_chunk(ch2, vec)
+
+        # Canonical should have both paths in aliases
+        mat, meta = idx.load_embeddings_matrix()
+        canonical_aliases = meta[0]["aliases"]
+        assert "a.py" in canonical_aliases
+        assert "b.py" in canonical_aliases
+
+        # Alias chunk should have empty aliases
+        assert meta[1]["aliases"] == []
+    finally:
+        idx.close()
+
+
+def test_insert_unique_chunks_no_deduplication(db_path: Path) -> None:
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        vec = [1.0, 0.0, 0.0]
+
+        # Insert different chunks (not duplicates)
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="foo",
+            start_line=1,
+            end_line=3,
+            text="def foo():\n    pass",
+            language="python",
+        )
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="bar",
+            start_line=1,
+            end_line=3,
+            text="def bar():\n    pass",
+            language="python",
+        )
+        idx.insert_chunk(ch1, vec)
+        idx.insert_chunk(ch2, vec)
+
+        # Should have 2 rows, both canonicals
+        assert idx.chunk_count() == 2
+        mat, meta = idx.load_embeddings_matrix()
+        assert meta[0]["canonical_id"] == ""
+        assert meta[1]["canonical_id"] == ""
+    finally:
+        idx.close()
+
+
+def test_search_fts_returns_results(db_path: Path) -> None:
+    """Test that FTS5 search returns results matching the query."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="my_func",
+            start_line=1,
+            end_line=3,
+            text="def my_func():\n    return 42\n",
+            language="python",
+        )
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="other",
+            start_line=1,
+            end_line=3,
+            text="def other():\n    pass\n",
+            language="python",
+        )
+        vec = [1.0, 0.0, 0.0]
+        idx.insert_chunk(ch1, vec)
+        idx.insert_chunk(ch2, vec)
+
+        # Search for "my_func" should return the first chunk
+        results = idx.search_fts("my_func", k=5)
+        assert len(results) == 1
+        assert results[0]["symbol"] == "my_func"
+    finally:
+        idx.close()
+
+
+def test_search_fts_empty_index(db_path: Path) -> None:
+    """Test FTS5 search on empty index returns empty list."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        results = idx.search_fts("test", k=5)
+        assert results == []
+    finally:
+        idx.close()
+
+
+def test_fts_deleted_with_chunks(db_path: Path) -> None:
+    """Test that FTS5 entries are deleted when chunks are deleted."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        ch = Chunk(
+            path="delete_me.py",
+            symbol_name="del_func",
+            start_line=1,
+            end_line=3,
+            text="def del_func(): pass",
+            language="python",
+        )
+        vec = [1.0, 0.0, 0.0]
+        idx.insert_chunk(ch, vec)
+
+        # Should find it in FTS5
+        results = idx.search_fts("del_func", k=5)
+        assert len(results) == 1
+
+        # Delete by path
+        idx.delete_chunks_by_paths(["delete_me.py"])
+
+        # Should no longer find it
+        results = idx.search_fts("del_func", k=5)
+        assert results == []
+    finally:
+        idx.close()
+

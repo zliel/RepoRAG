@@ -85,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 CREATE INDEX IF NOT EXISTS idx_chunks_canonical_id ON chunks(canonical_id);
 CREATE INDEX IF NOT EXISTS idx_code_graph_chunk ON code_graph(chunk_id);
 CREATE INDEX IF NOT EXISTS idx_code_graph_reference ON code_graph(reference);
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(path, symbol, text);
 """
 
 
@@ -95,6 +96,15 @@ def _float32_blob(vec: list[float]) -> bytes:
 def _blob_to_float32(blob: bytes) -> np.ndarray:
     n = len(blob) // 4
     return np.frombuffer(blob, dtype=np.float32, count=n).copy()
+
+
+# RRF constant for hybrid search
+RRF_K = 60
+
+
+def _rrf_score(rank: int) -> float:
+    """Compute Reciprocal Rank Fusion score for a given rank position."""
+    return 1.0 / (rank + RRF_K)
 
 
 class ChunkIndex:
@@ -206,6 +216,7 @@ class ChunkIndex:
         self._conn.close()
 
     def clear(self) -> None:
+        self._conn.execute("DELETE FROM chunks_fts")
         self._conn.execute("DELETE FROM chunks")
         self._conn.execute("DELETE FROM meta")
         self._conn.execute("DELETE FROM file_metadata")
@@ -226,7 +237,9 @@ class ChunkIndex:
     def delete_chunks_by_paths(self, paths: list[str]) -> None:
         if not paths:
             return
+        # First delete matching FTS5 entries by path
         placeholders = ",".join("?" * len(paths))
+        self._conn.execute(f"DELETE FROM chunks_fts WHERE path IN ({placeholders})", paths)
         self._conn.execute(f"DELETE FROM chunks WHERE path IN ({placeholders})", paths)
 
     def delete_file_metadata_by_paths(self, paths: list[str]) -> None:
@@ -316,8 +329,41 @@ class ChunkIndex:
                 ),
             )
 
+        chunk_id = int(cur.lastrowid)
+        # Also insert into FTS5 for keyword search
+        self._conn.execute(
+            "INSERT INTO chunks_fts(path, symbol, text) VALUES (?, ?, ?)",
+            (chunk.path, chunk.symbol_name, chunk.text),
+        )
         self._conn.commit()
-        return int(cur.lastrowid)
+        return chunk_id
+
+    def _add_alias_to_canonical(self, canonical_id: str, new_alias_path: str) -> None:
+        """
+        Add a new alias path to a canonical chunk's aliases list.
+
+        Args:
+            canonical_id: The database id of the canonical chunk.
+            new_alias_path: The file path to add as an alias.
+        """
+        # Get current aliases
+        row = self._conn.execute(
+            "SELECT aliases FROM chunks WHERE id = ?",
+            (canonical_id,),
+        ).fetchone()
+
+        if not row:
+            return
+
+        aliases: list[str] = json.loads(row[0]) if row[0] else []
+
+        # Add new alias if not already present
+        if new_alias_path not in aliases:
+            aliases.append(new_alias_path)
+            self._conn.execute(
+                "UPDATE chunks SET aliases = ? WHERE id = ?",
+                (json.dumps(aliases), canonical_id),
+            )
 
     def _add_alias_to_canonical(self, canonical_id: str, new_alias_path: str) -> None:
         """
@@ -536,6 +582,51 @@ class ChunkIndex:
                 )
 
         return related[:max_results]
+
+    def search_fts(self, query: str, k: int) -> list[dict[str, str | int]]:
+        """
+        Search using FTS5 full-text search. Returns up to k results with chunk_id and rank.
+
+        Uses BM25-style ranking from FTS5. The query is passed as-is to FTS5 MATCH.
+        """
+        if not query:
+            return []
+
+        fts_query = query.strip()
+
+        try:
+            # Use FTS5 MATCH - SQLite handles ranking internally
+            # Join with chunks to get the actual chunk ID, use DISTINCT to avoid duplicates
+            rows = self._conn.execute(
+                """
+                SELECT DISTINCT c.id, c.path, c.symbol, c.start_line, c.end_line, c.text, c.language
+                FROM chunks_fts fts
+                JOIN chunks c ON c.path = fts.path AND c.symbol = fts.symbol
+                WHERE chunks_fts MATCH ?
+                LIMIT ?
+                """,
+                (fts_query, k),
+            ).fetchall()
+        except sqlite3.OperationalError as e:
+            # If query syntax error, fall back to empty results
+            logger.warning("FTS5 query error: %s", e)
+            return []
+
+        results: list[dict[str, str | int]] = []
+        for row in rows:
+            results.append(
+                {
+                    "id": int(row[0]),
+                    "path": str(row[1]),
+                    "symbol": str(row[2]),
+                    "start_line": int(row[3]),
+                    "end_line": int(row[4]),
+                    "text": str(row[5]),
+                    "language": str(row[6]),
+                    "rank": 0.0,  # Rank will be determined by position in list for RRF
+                }
+            )
+        return results
 
 
 def open_index(db_path: Path) -> ChunkIndex:
