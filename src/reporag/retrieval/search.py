@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,6 +16,8 @@ class RetrievedChunk:
     text: str
     language: str
     score: float
+    canonical_id: int | None = None
+    aliases: tuple[str, ...] = ()
 
 
 def _l2_normalize_rows(x: np.ndarray) -> np.ndarray:
@@ -44,6 +47,14 @@ def top_k_similar(
     out: list[RetrievedChunk] = []
     for i in idx:
         m = meta[int(i)]
+        # Extract canonical_id and aliases from metadata
+        canonical_id: int | None = m.get("canonical_id")
+        aliases: tuple[str, ...] = ()
+        if aliases_str := m.get("aliases"):
+            try:
+                aliases = tuple(json.loads(aliases_str))
+            except (json.JSONDecodeError, TypeError):
+                pass
         out.append(
             RetrievedChunk(
                 chunk_id=int(m["id"]),
@@ -54,6 +65,8 @@ def top_k_similar(
                 text=str(m["text"]),
                 language=str(m.get("language", "python")),
                 score=float(scores[int(i)]),
+                canonical_id=canonical_id,
+                aliases=aliases,
             )
         )
     return out
