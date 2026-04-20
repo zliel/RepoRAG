@@ -157,3 +157,77 @@ def test_delete_file_metadata_by_paths(db_path: Path) -> None:
         assert len(idx.get_all_file_mtimes()) == 1
     finally:
         idx.close()
+
+
+def test_search_fts_returns_results(db_path: Path) -> None:
+    """Test that FTS5 search returns results matching the query."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        ch1 = Chunk(
+            path="a.py",
+            symbol_name="my_func",
+            start_line=1,
+            end_line=3,
+            text="def my_func():\n    return 42\n",
+            language="python",
+        )
+        ch2 = Chunk(
+            path="b.py",
+            symbol_name="other",
+            start_line=1,
+            end_line=3,
+            text="def other():\n    pass\n",
+            language="python",
+        )
+        vec = [1.0, 0.0, 0.0]
+        idx.insert_chunk(ch1, vec)
+        idx.insert_chunk(ch2, vec)
+
+        # Search for "my_func" should return the first chunk
+        results = idx.search_fts("my_func", k=5)
+        assert len(results) == 1
+        assert results[0]["symbol"] == "my_func"
+    finally:
+        idx.close()
+
+
+def test_search_fts_empty_index(db_path: Path) -> None:
+    """Test FTS5 search on empty index returns empty list."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        results = idx.search_fts("test", k=5)
+        assert results == []
+    finally:
+        idx.close()
+
+
+def test_fts_deleted_with_chunks(db_path: Path) -> None:
+    """Test that FTS5 entries are deleted when chunks are deleted."""
+    idx = open_index(db_path)
+    try:
+        idx.clear()
+        ch = Chunk(
+            path="delete_me.py",
+            symbol_name="del_func",
+            start_line=1,
+            end_line=3,
+            text="def del_func(): pass",
+            language="python",
+        )
+        vec = [1.0, 0.0, 0.0]
+        idx.insert_chunk(ch, vec)
+
+        # Should find it in FTS5
+        results = idx.search_fts("del_func", k=5)
+        assert len(results) == 1
+
+        # Delete by path
+        idx.delete_chunks_by_paths(["delete_me.py"])
+
+        # Should no longer find it
+        results = idx.search_fts("del_func", k=5)
+        assert results == []
+    finally:
+        idx.close()
