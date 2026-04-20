@@ -56,6 +56,7 @@ class ChunkIndex:
     def _ensure_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
         self._migrate_language_column()
+        self._migrate_dedup_columns()
         self._conn.commit()
 
     def _migrate_language_column(self) -> None:
@@ -67,6 +68,19 @@ class ChunkIndex:
             )
             logger = logging.getLogger(__name__)
             logger.info("Migrated chunks table: added 'language' column")
+
+    def _migrate_dedup_columns(self) -> None:
+        """Add canonical_id and aliases columns for chunk deduplication."""
+        columns = self._conn.execute("PRAGMA table_info(chunks)").fetchall()
+        column_names = {col[1] for col in columns}
+        if "canonical_id" not in column_names:
+            self._conn.execute(
+                "ALTER TABLE chunks ADD COLUMN canonical_id INTEGER REFERENCES chunks(id)"
+            )
+            logger.info("Migrated chunks table: added 'canonical_id' column")
+        if "aliases" not in column_names:
+            self._conn.execute("ALTER TABLE chunks ADD COLUMN aliases TEXT DEFAULT ''")
+            logger.info("Migrated chunks table: added 'aliases' column")
 
     def close(self) -> None:
         self._conn.close()
@@ -149,10 +163,10 @@ class ChunkIndex:
     def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, str | int]]]:
         """
         Load all rows: returns (matrix float32 [n, dim], metadata list aligned with rows).
-        Each metadata dict: id, path, symbol, start_line, end_line, text, language.
+        Each metadata dict: id, path, symbol, start_line, end_line, text, language, canonical_id, aliases.
         """
         rows = self._conn.execute(
-            "SELECT id, path, symbol, start_line, end_line, text, language, embedding "
+            "SELECT id, path, symbol, start_line, end_line, text, language, canonical_id, aliases, embedding "
             "FROM chunks ORDER BY id"
         ).fetchall()
         if not rows:
@@ -161,7 +175,7 @@ class ChunkIndex:
         embeddings: list[np.ndarray] = []
         meta: list[dict[str, str | int]] = []
         dim: int | None = None
-        for rid, path, symbol, sl, el, text, language, emb_blob in rows:
+        for rid, path, symbol, sl, el, text, language, canonical_id, aliases, emb_blob in rows:
             v = _blob_to_float32(emb_blob)
             if dim is None:
                 dim = int(v.shape[0])
@@ -177,6 +191,8 @@ class ChunkIndex:
                     "end_line": int(el),
                     "text": str(text),
                     "language": str(language),
+                    "canonical_id": int(canonical_id) if canonical_id is not None else None,
+                    "aliases": str(aliases) if aliases else "",
                 }
             )
         mat = np.stack(embeddings, axis=0).astype(np.float32, copy=False)
