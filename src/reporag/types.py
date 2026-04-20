@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,3 +13,5 @@ class Chunk:
     end_line: int
     text: str
     language: str
+    canonical_id: str = ""
+    aliases: list[str] = field(default_factory=list)
