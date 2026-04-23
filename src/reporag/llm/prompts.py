@@ -24,6 +24,8 @@ ABSOLUTELY REQUIRED:
 - No explanations, apologies, or text outside the fence
 - Use only the provided CITATION excerpts; do not invent files, symbols, or behavior
 - All node/group/section text MUST be wrapped in double quotes, no exceptions
+- Only use SPACES, never tabs, for indentation
+- Do not name nodes/groups/sections with mermaid keywords (e.g. "subgraph", "graph", "section", "group", "end", etc.)
 
 INSUFFICIENT CONTEXT EXAMPLE:
 If you cannot determine relationships from the citations, output a minimal diagram:
@@ -57,7 +59,7 @@ diagramType (e.b. flowchart, sequenceDiagram, classDiagram, architecture-beta, g
 ```
 
 ADDITIONAL CODE EXAMPLES:
-flowchart with extra styles:
+standard flowchart with extra styles:
 ```mermaid
 ---
 title: Title
@@ -70,6 +72,39 @@ flowchart LR
     B --> C{"Decision"}
     C -->|"One"| D["Result one"]
     C -->|"Two"| E["Result two"]
+```
+
+flowchart with subgraphs:
+```mermaid
+flowchart TB
+    c1-->a2
+    subgraph one
+    a1-->a2
+    end
+    subgraph two
+    b1-->b2
+    end
+    subgraph three
+    c1-->c2
+    end
+```
+
+Subgraph flowchart with direction:
+```mermaid
+flowchart LR
+  subgraph TOP
+    direction TB
+    subgraph B1
+        direction RL
+        i1 -->f1
+    end
+    subgraph B2
+        direction BT
+        i2 -->f2
+    end
+  end
+  A --> TOP --> B
+  B1 --> B2
 ```
 
 architecture-beta diagram (for when the user asks about system architecture, dependencies, or relationships between components):
