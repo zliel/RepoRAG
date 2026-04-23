@@ -301,7 +301,10 @@ class ChunkIndex:
 
             cur = self._conn.execute(
                 """
-                INSERT INTO chunks(path, symbol, start_line, end_line, text, source_text, language, embedding, canonical_id, aliases)
+                INSERT INTO chunks(
+                    path, symbol, start_line, end_line, text, source_text,
+                    language, embedding, canonical_id, aliases
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -323,7 +326,10 @@ class ChunkIndex:
 
             cur = self._conn.execute(
                 """
-                INSERT INTO chunks(path, symbol, start_line, end_line, text, source_text, language, embedding, canonical_id, aliases)
+                INSERT INTO chunks(
+                    path, symbol, start_line, end_line, text, source_text,
+                    language, embedding, canonical_id, aliases
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -409,11 +415,13 @@ class ChunkIndex:
 
     def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
         """
-        Load all rows: returns (matrix float32 [n, dim], metadata list aligned with rows).
-        Each metadata dict: id, path, symbol, start_line, end_line, text, source_text, language, canonical_id, aliases.
+        Load all rows: returns (matrix float32 [n, dim], metadata list aligned
+        with rows). Each metadata dict: id, path, symbol, start_line, end_line,
+        text, source_text, language, canonical_id, aliases.
         """
         rows = self._conn.execute(
-            "SELECT id, path, symbol, start_line, end_line, text, source_text, language, embedding, canonical_id, aliases "
+            "SELECT id, path, symbol, start_line, end_line, text, source_text, "
+            "language, embedding, canonical_id, aliases "
             "FROM chunks ORDER BY id"
         ).fetchall()
         if not rows:
@@ -474,8 +482,8 @@ class ChunkIndex:
         """
         from reporag.retrieval.graph import (
             build_chunk_symbol_map,
-            extract_imports_from_source,
             extract_calls_from_chunk,
+            extract_imports_from_source,
         )
 
         # Clear existing graph
@@ -484,7 +492,8 @@ class ChunkIndex:
 
         # Load chunks with their source texts
         rows = self._conn.execute(
-            "SELECT id, path, symbol, text, source_text, language FROM chunks WHERE source_text != ''"
+            "SELECT id, path, symbol, text, source_text, language "
+            "FROM chunks WHERE source_text != ''"
         ).fetchall()
 
         if not rows:

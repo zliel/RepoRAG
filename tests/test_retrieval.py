@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from reporag.retrieval.search import hybrid_search, top_k_similar, _rrf_score
+from reporag.retrieval.search import _rrf_score, hybrid_search, top_k_similar
 
 
 def test_top_k_similar_ordering() -> None:
