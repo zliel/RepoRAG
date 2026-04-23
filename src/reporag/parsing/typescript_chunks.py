@@ -68,7 +68,8 @@ class TypeScriptParser(ParserProtocol):
         return "typescript"
 
     def extract_chunks(self, relative_path: str, source_bytes: bytes) -> list[Chunk]:
-        """Parse TypeScript/TSX source and return one Chunk per function, class, or type definition."""
+        """Parse TypeScript/TSX source and return one Chunk per function, class,
+        or type definition."""
         is_tsx = relative_path.lower().endswith(".tsx")
         parser = Parser(_TSX_LANGUAGE if is_tsx else _TS_LANGUAGE)
         tree = parser.parse(source_bytes)
