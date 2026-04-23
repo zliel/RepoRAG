@@ -14,6 +14,17 @@ from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_fts_query(query: str) -> str:
+    """Remove FTS5 special characters that cause syntax errors."""
+    # FTS5 special chars: ? " * ( ) ^ - ,
+    for char in '?*"()-^,':
+        query = query.replace(char, "")
+    # Handle unbalanced quotes
+    query = query.replace('"', "")
+    return query.strip()
+
+
 # Regex patterns for fuzzy text normalization
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _SINGLE_LINE_COMMENT_PATTERN = re.compile(r"#.*$", re.MULTILINE)
@@ -592,7 +603,7 @@ class ChunkIndex:
         if not query:
             return []
 
-        fts_query = query.strip()
+        fts_query = _sanitize_fts_query(query)
 
         try:
             # Use FTS5 MATCH - SQLite handles ranking internally
