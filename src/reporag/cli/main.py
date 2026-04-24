@@ -35,7 +35,7 @@ from reporag.retrieval.context_files import (
     chunk_context_path,
     retrieve_context_sections,
 )
-from reporag.retrieval.search import RetrievedChunk, top_k_similar, hybrid_search
+from reporag.retrieval.search import RetrievedChunk, hybrid_search, top_k_similar
 from reporag.types import Chunk
 
 logger = logging.getLogger(__name__)
@@ -439,8 +439,6 @@ def cmd_search(
 
         # Optionally enhance with graph-based related chunks
         if use_graph:
-            from reporag.indexing.store import ChunkIndex
-
             idx_for_graph = open_index(db)
             try:
                 # Add related chunks from graph
