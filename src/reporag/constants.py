@@ -5,3 +5,6 @@ DEFAULT_EMBED_MODEL = "nomic-embed-text-v2-moe"
 DEFAULT_EMBED_BATCH = 32
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_NUM_CTX = 32000
+
+# RRF constant for hybrid search (standard value from literature)
+RRF_K = 60
