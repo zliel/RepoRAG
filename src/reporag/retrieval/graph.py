@@ -42,7 +42,7 @@ _GO_IMPORT_RE = re.compile(r'"([^"]+)"', re.MULTILINE)
 # =============================================================================
 
 # Python class/function calls (PascalCase identifiers)
-_PYTHON_CALL_RE = re.compile(r"\b([A-Z][\w]*)\s*\(")
+_PYTHON_CALL_RE = re.compile(r"\b([a-zA-Z_][\w]*)\s*\(")
 
 # JavaScript/TypeScript function calls (camelCase identifiers)
 _JS_CALL_RE = re.compile(r"\b([a-z][A-Za-z0-9]*)\s*\(")
