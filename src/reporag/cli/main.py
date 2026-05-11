@@ -789,7 +789,7 @@ def cmd_diagram(
             if mmdc_path is None:
                 logger.warning(
                     "mermaid-cli not found; install with `npm install -g @mermaid-js/mermaid-cli` "
-                    "or specify with --mermaid-path"
+                    "or set the MMDC_PATH environment variable"
                 )
                 # Try to find it via env
                 mmdc_path = os.environ.get("MMDC_PATH")
