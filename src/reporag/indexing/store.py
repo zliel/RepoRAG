@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_fts_query(query: str) -> str:
     """Remove FTS5 special characters that cause syntax errors."""
-    # FTS5 special chars: ? " * ( ) ^ - ,
     for char in '?*"()^,':
         query = query.replace(char, "")
     # Handle unbalanced quotes
@@ -394,9 +393,7 @@ class ChunkIndex:
         languages = {row[0]: row[1] for row in lang_rows}
 
         # Index age
-        age_row = self._conn.execute(
-            "SELECT MIN(indexed_at) FROM file_metadata"
-        ).fetchone()
+        age_row = self._conn.execute("SELECT MIN(indexed_at) FROM file_metadata").fetchone()
         indexed_at = age_row[0] if age_row and age_row[0] else None
 
         return {
@@ -648,6 +645,3 @@ class ChunkIndex:
 def open_index(db_path: Path) -> ChunkIndex:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return ChunkIndex(db_path.resolve())
-
-
-
