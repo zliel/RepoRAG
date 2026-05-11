@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_fts_query(query: str) -> str:
     """Remove FTS5 special characters that cause syntax errors."""
-    # FTS5 special chars: ? " * ( ) ^ - ,
-    for char in '?*"()-^,':
+    for char in '?*"()^,':
         query = query.replace(char, "")
     # Handle unbalanced quotes
     query = query.replace('"', "")
@@ -107,15 +106,6 @@ def _float32_blob(vec: list[float]) -> bytes:
 def _blob_to_float32(blob: bytes) -> np.ndarray:
     n = len(blob) // 4
     return np.frombuffer(blob, dtype=np.float32, count=n).copy()
-
-
-# RRF constant for hybrid search
-RRF_K = 60
-
-
-def _rrf_score(rank: int) -> float:
-    """Compute Reciprocal Rank Fusion score for a given rank position."""
-    return 1.0 / (rank + RRF_K)
 
 
 class ChunkIndex:
@@ -382,36 +372,39 @@ class ChunkIndex:
                 (json.dumps(aliases), canonical_id),
             )
 
-    def _add_alias_to_canonical(self, canonical_id: str, new_alias_path: str) -> None:
-        """
-        Add a new alias path to a canonical chunk's aliases list.
-
-        Args:
-            canonical_id: The database id of the canonical chunk.
-            new_alias_path: The file path to add as an alias.
-        """
-        # Get current aliases
-        row = self._conn.execute(
-            "SELECT aliases FROM chunks WHERE id = ?",
-            (canonical_id,),
-        ).fetchone()
-
-        if not row:
-            return
-
-        aliases: list[str] = json.loads(row[0]) if row[0] else []
-
-        # Add new alias if not already present
-        if new_alias_path not in aliases:
-            aliases.append(new_alias_path)
-            self._conn.execute(
-                "UPDATE chunks SET aliases = ? WHERE id = ?",
-                (json.dumps(aliases), canonical_id),
-            )
-
     def chunk_count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
         return int(row[0]) if row else 0
+
+    def get_stats(self) -> dict[str, object]:
+        """Return index statistics."""
+        chunk_count = self.chunk_count()
+        file_count = (
+            self._conn.execute("SELECT COUNT(DISTINCT path) FROM chunks").fetchone()[0] or 0
+        )
+        path_count = self._conn.execute("SELECT COUNT(*) FROM file_metadata").fetchone()[0] or 0
+        embed_model = self.get_meta("embed_model") or "unknown"
+        embed_dim = self.get_meta("embed_dim") or "unknown"
+
+        # Per-language breakdown
+        lang_rows = self._conn.execute(
+            "SELECT language, COUNT(*) as cnt FROM chunks GROUP BY language ORDER BY cnt DESC"
+        ).fetchall()
+        languages = {row[0]: row[1] for row in lang_rows}
+
+        # Index age
+        age_row = self._conn.execute("SELECT MIN(indexed_at) FROM file_metadata").fetchone()
+        indexed_at = age_row[0] if age_row and age_row[0] else None
+
+        return {
+            "total_chunks": chunk_count,
+            "total_files": file_count,
+            "file_metadata_entries": path_count,
+            "embed_model": embed_model,
+            "embed_dimension": embed_dim,
+            "languages": languages,
+            "indexed_at": indexed_at,
+        }
 
     def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
         """
@@ -652,76 +645,3 @@ class ChunkIndex:
 def open_index(db_path: Path) -> ChunkIndex:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return ChunkIndex(db_path.resolve())
-
-
-class CodeGraphBuilder:
-    """Extracts imports/calls from source code to build code graph."""
-
-    # Language-specific patterns
-    _PYTHON_IMPORT = re.compile(
-        r"^(?:from\s+([\w.]+)\s+import|(?:import\s+([\w.]+)))",
-        re.MULTILINE,
-    )
-    _PYTHON_CALL = re.compile(r"\b([A-Z][\w]*)\s*\(")
-    _JS_IMPORT = re.compile(
-        r"^(?:import\s+.*?\s+from\s+['\"]([^'\"]+)['\"]|"
-        r"require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)|"
-        r"export\s+\{[^}]*\bfrom\s+['\"]([^'\"]+)['\"])",
-        re.MULTILINE,
-    )
-    _JS_CALL = re.compile(r"\b(\w+)\s*\(")
-    _RUST_IMPORT = re.compile(
-        r"^(?:use\s+([\w:]+)|mod\s+([\w_]+)|extern\s+crate\s+[\w]+)",
-        re.MULTILINE,
-    )
-    _GO_IMPORT = re.compile(
-        r"^\s*[\"']([\w/]+)[\"']|"
-        r"^\s*(\w+)\s*\(",
-        re.MULTILINE,
-    )
-
-    @classmethod
-    def extract_imports(cls, source: str, language: str) -> list[str]:
-        """Extract import/module references from source code."""
-        imports: set[str] = set()
-
-        if language == "python":
-            for m in cls._PYTHON_IMPORT.finditer(source):
-                imports.add(m.group(1) or m.group(2))
-
-        elif language in ("javascript", "typescript"):
-            for m in cls._JS_IMPORT.finditer(source):
-                imports.add(m.group(1) or m.group(2) or m.group(3))
-
-        elif language == "rust":
-            for m in cls._RUST_IMPORT.finditer(source):
-                for g in m.groups():
-                    if g and "prelude" not in g.lower():
-                        imports.add(g)
-
-        elif language == "go":
-            # Go imports
-            import_section = re.search(r"import\s*\((.*?)\)", source, re.DOTALL)
-            if import_section:
-                inner = import_section.group(1)
-                for line in inner.splitlines():
-                    m = re.search(r'"([^"]+)"', line)
-                    if m:
-                        imports.add(m.group(1))
-
-        return list(imports)
-
-    @classmethod
-    def extract_calls(cls, source: str, language: str) -> list[str]:
-        """Extract function/class calls from source code."""
-        calls: set[str] = set()
-
-        if language == "python":
-            for m in cls._PYTHON_CALL.finditer(source):
-                calls.add(m.group(1))
-
-        elif language in ("javascript", "typescript"):
-            for m in cls._JS_CALL.finditer(source):
-                calls.add(m.group(1))
-
-        return list(calls)

@@ -27,6 +27,8 @@ class Config:
     api_key: str | None = None
     embed_batch: int = DEFAULT_EMBED_BATCH
     temperature: float = DEFAULT_TEMPERATURE
+    timeout: float | None = None  # HTTP timeout in seconds for LLM API calls
+    exclude_patterns: list[str] | None = None  # Additional glob exclusion patterns
 
     @property
     def ollama_base(self) -> str | None:
@@ -62,6 +64,9 @@ embed_batch = {DEFAULT_EMBED_BATCH}
 
 # API key (for OpenAI-compatible backends like vllm, llamacpp, lmstudio)
 # api_key = ""
+
+# Additional glob exclusion patterns (comma-separated in TOML array)
+# exclude_patterns = ["tests/", "venv/", "*.pyc"]
 """
 
     @classmethod
@@ -117,6 +122,10 @@ embed_batch = {DEFAULT_EMBED_BATCH}
             self.embed_batch = embed_batch
         if temperature := reporag.get("temperature"):
             self.temperature = temperature
+        if exclude_patterns := reporag.get("exclude_patterns"):
+            self.exclude_patterns = exclude_patterns
+        if timeout := reporag.get("timeout"):
+            self.timeout = timeout
 
 
 def _config_locations() -> list[Path]:

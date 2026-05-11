@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from reporag.constants import RRF_K
+
 
 @dataclass(frozen=True, slots=True)
 class RetrievedChunk:
@@ -24,10 +26,6 @@ def _l2_normalize_rows(x: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(x, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-12)
     return x / norms
-
-
-# RRF constant - standard value from literature
-RRF_K = 60
 
 
 def _rrf_score(rank: int, k: int = RRF_K) -> float:
