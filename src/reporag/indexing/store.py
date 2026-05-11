@@ -377,6 +377,38 @@ class ChunkIndex:
         row = self._conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
         return int(row[0]) if row else 0
 
+    def get_stats(self) -> dict[str, object]:
+        """Return index statistics."""
+        chunk_count = self.chunk_count()
+        file_count = (
+            self._conn.execute("SELECT COUNT(DISTINCT path) FROM chunks").fetchone()[0] or 0
+        )
+        path_count = self._conn.execute("SELECT COUNT(*) FROM file_metadata").fetchone()[0] or 0
+        embed_model = self.get_meta("embed_model") or "unknown"
+        embed_dim = self.get_meta("embed_dim") or "unknown"
+
+        # Per-language breakdown
+        lang_rows = self._conn.execute(
+            "SELECT language, COUNT(*) as cnt FROM chunks GROUP BY language ORDER BY cnt DESC"
+        ).fetchall()
+        languages = {row[0]: row[1] for row in lang_rows}
+
+        # Index age
+        age_row = self._conn.execute(
+            "SELECT MIN(indexed_at) FROM file_metadata"
+        ).fetchone()
+        indexed_at = age_row[0] if age_row and age_row[0] else None
+
+        return {
+            "total_chunks": chunk_count,
+            "total_files": file_count,
+            "file_metadata_entries": path_count,
+            "embed_model": embed_model,
+            "embed_dimension": embed_dim,
+            "languages": languages,
+            "indexed_at": indexed_at,
+        }
+
     def load_embeddings_matrix(self) -> tuple[np.ndarray, list[dict[str, Any]]]:
         """
         Load all rows: returns (matrix float32 [n, dim], metadata list aligned
