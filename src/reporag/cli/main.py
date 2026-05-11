@@ -54,7 +54,12 @@ def get_backend(
     if cfg is None:
         cfg = get_config()
     backend_type = backend_override or cfg.backend
-    return create_backend(backend_type, base_url=cfg.base_url, api_key=cfg.api_key)
+    return create_backend(
+        backend_type,
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        timeout=cfg.timeout,
+    )
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -162,9 +167,27 @@ def stream_output(chunks: Iterator[str], silent: bool = False) -> str:
     return "".join(full)
 
 
+def _version_callback(version: bool) -> None:
+    if version:
+        try:
+            from importlib.metadata import version as _v
+
+            typer.echo(f"reporag {_v('reporag')}")
+        except Exception:
+            typer.echo("reporag (unknown version)")
+        raise typer.Exit()
+
+
 @app.callback()
 def _global(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug logging."),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show version and exit.",
+        is_eager=True,
+        callback=_version_callback,
+    ),
 ) -> None:
     _setup_logging(verbose)
 
@@ -181,6 +204,41 @@ def cmd_list(
     ext_display = get_supported_extensions_display()
     logger.info("Found %d supported files (%s)", len(paths), ext_display)
     typer.echo(f"Total: {len(paths)}", err=True)
+
+
+@app.command("stats")
+def cmd_stats(
+    db: Path | None = typer.Option(
+        None, "--db", help="SQLite index path (default: from config or index.sqlite)."
+    ),
+) -> None:
+    """Show index statistics."""
+    cfg = get_config()
+    db = db or Path(cfg.db)
+    if not db.exists():
+        typer.echo(f"Index not found: {db}", err=True)
+        raise typer.Exit(1)
+    idx = open_index(db)
+    try:
+        stats = idx.get_stats()
+        typer.echo(f"Total chunks:     {stats['total_chunks']}")
+        typer.echo(f"Total files:      {stats['total_files']}")
+        typer.echo(f"Metadata entries: {stats['file_metadata_entries']}")
+        typer.echo(f"Embed model:      {stats['embed_model']}")
+        typer.echo(f"Embed dimension:  {stats['embed_dimension']}")
+        typer.echo(f"Languages:        {stats['languages']}")
+
+        # If there's a graph, show graph edges too
+        graph_count = idx._conn.execute("SELECT COUNT(*) FROM code_graph").fetchone()[0] or 0
+        typer.echo(f"Graph edges:      {graph_count}")
+
+        if stats.get("indexed_at"):
+            from datetime import datetime
+
+            ts = datetime.fromtimestamp(float(stats["indexed_at"])).strftime("%Y-%m-%d %H:%M:%S")
+            typer.echo(f"Index created:    {ts}")
+    finally:
+        idx.close()
 
 
 @app.command("chunks")
@@ -231,6 +289,11 @@ def cmd_index(
         "--graph/--no-graph",
         help="Build code graph (imports/calls) for graph-based retrieval.",
     ),
+    exclude: list[str] = typer.Option(
+        None,
+        "--exclude",
+        help="Additional exclude glob patterns (can be specified multiple times).",
+    ),
 ) -> None:
     """Build embedding index for all supported source files (incremental by default)."""
     cfg = get_config()
@@ -253,7 +316,10 @@ def cmd_index(
             indexed_mtimes = idx.get_all_file_mtimes()
 
         tqdm.write("Discovering files...", file=sys.stderr)
-        file_paths = walk_supported_files(root)
+        extra_exclude = list(cfg.exclude_patterns or [])
+        if exclude:
+            extra_exclude.extend(exclude)
+        file_paths = walk_supported_files(root, exclude_patterns=extra_exclude)
 
         to_reindex: list[Path] = []
         to_remove: list[str] = []
@@ -406,6 +472,9 @@ def cmd_search(
         "--graph/--no-graph",
         help="Use graph-based retrieval to find related chunks.",
     ),
+    graph_k: int = typer.Option(
+        3, "--graph-k", help="Number of top results to expand via graph."
+    ),
 ) -> None:
     """Retrieve top-k chunks for a query."""
     cfg = get_config()
@@ -443,7 +512,7 @@ def cmd_search(
             try:
                 # Add related chunks from graph
                 graph_related: list[RetrievedChunk] = []
-                for h in hits[:3]:  # Get related for top 3 semantic hits
+                for h in hits[:graph_k]:  # Get related for top N semantic hits
                     related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
                     for rel in related:
                         # Check if not already in hits
@@ -514,6 +583,9 @@ def cmd_ask(
         "--graph/--no-graph",
         help="Use graph-based retrieval to find related chunks.",
     ),
+    graph_k: int = typer.Option(
+        3, "--graph-k", help="Number of top results to expand via graph."
+    ),
 ) -> None:
     """Answer using retrieved context and LLM chat."""
     if stream is None:
@@ -547,7 +619,7 @@ def cmd_ask(
             idx_for_graph = open_index(db)
             try:
                 graph_related: list[RetrievedChunk] = []
-                for h in hits[:3]:  # Get related for top 3 semantic hits
+                for h in hits[:graph_k]:  # Get related for top N semantic hits
                     related = idx_for_graph.get_related_chunks(h.chunk_id, max_results=3)
                     for rel in related:
                         # Check if not already in hits
