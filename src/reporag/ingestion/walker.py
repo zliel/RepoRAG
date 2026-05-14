@@ -126,7 +126,6 @@ def walk_supported_files(
     negations = [p[1:] for p in (*gitignore_patterns, *user_patterns) if p.startswith("!")]
     exclusions = [p for p in (*gitignore_patterns, *user_patterns) if not p.startswith("!")]
 
-    # ── Walk files ─────────────────────────────────────────────────────
     paths: list[Path] = []
     for p in root.rglob("*"):
         try:

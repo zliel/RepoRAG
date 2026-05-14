@@ -17,6 +17,20 @@ Rules:
 - If the excerpts are insufficient, say so clearly and answer only what is supported.
 - Do not cite paths or line ranges that are not present in the provided CITATION headers."""
 
+RERANK_SYSTEM = """You are a precise relevance scorer for code retrieval.
+
+You will be given a search query and several code passages.  Rate each passage's
+relevance to the query on a scale of **0–10** (0 = completely irrelevant,
+10 = perfectly answers the query).
+
+Output ONLY one numeric score per line, in the same order as the passages.
+Each score should be on its own line — nothing else.
+
+Example:
+7
+3
+9"""
+
 DIAGRAM_SYSTEM = """You are a Mermaid diagram generator for code analysis. STRICT RULES:
 
 ABSOLUTELY REQUIRED:

@@ -35,6 +35,7 @@ from reporag.retrieval.context_files import (
     chunk_context_path,
     retrieve_context_sections,
 )
+from reporag.retrieval.reranking import rerank_chunks
 from reporag.retrieval.search import RetrievedChunk, hybrid_search, top_k_similar
 from reporag.types import Chunk
 
@@ -59,6 +60,8 @@ def get_backend(
         base_url=cfg.base_url,
         api_key=cfg.api_key,
         timeout=cfg.timeout,
+        max_retries=cfg.max_retries,
+        backoff_factor=cfg.backoff_factor,
     )
 
 
@@ -581,6 +584,20 @@ def cmd_search(
             finally:
                 idx_for_graph.close()
 
+        # Rerank if enabled in config
+        if cfg.rerank.enabled:
+            hits = rerank_chunks(
+                client=client,
+                query=query,
+                chunks=hits,
+                chat_model=cfg.chat_model,
+                temperature=cfg.temperature,
+                top_k=cfg.rerank.top_k,
+                final_k=cfg.rerank.final_k,
+                method=cfg.rerank.method,
+                cross_encoder_model=cfg.rerank.model,
+            )
+
         for h in hits:
             output: dict[str, object] = {
                 "score": round(h.score, 6),
@@ -691,6 +708,20 @@ def cmd_ask(
                 hits = list(hits) + graph_related
             finally:
                 idx_for_graph.close()
+
+        # Rerank if enabled in config
+        if cfg.rerank.enabled:
+            hits = rerank_chunks(
+                client=client,
+                query=query,
+                chunks=hits,
+                chat_model=chat_model,
+                temperature=temperature,
+                top_k=cfg.rerank.top_k,
+                final_k=cfg.rerank.final_k,
+                method=cfg.rerank.method,
+                cross_encoder_model=cfg.rerank.model,
+            )
 
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)

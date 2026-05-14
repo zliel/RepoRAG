@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from reporag.constants import (
@@ -15,6 +15,15 @@ from reporag.constants import (
 from reporag.llm.backends import BackendType
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RerankConfig:
+    enabled: bool = False
+    top_k: int = 20
+    final_k: int = 8
+    method: str = "llm"  # "llm" or "cross-encoder"
+    model: str = ""
 
 
 @dataclass
@@ -31,6 +40,7 @@ class Config:
     exclude_patterns: list[str] | None = None
     max_retries: int = 3
     backoff_factor: float = 2.0
+    rerank: RerankConfig = field(default_factory=RerankConfig)
 
     @property
     def ollama_base(self) -> str | None:
@@ -73,6 +83,14 @@ embed_batch = {DEFAULT_EMBED_BATCH}
 # HTTP request retry settings
 max_retries = 3
 backoff_factor = 2.0
+
+# Cross-encoder reranking (opt-in; adds latency but improves relevance)
+[reporag.rerank]
+enabled = false
+top_k = 20
+final_k = 8
+method = "llm"
+# model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 """
 
     @classmethod
@@ -138,6 +156,19 @@ backoff_factor = 2.0
             self.backoff_factor = backoff_factor
 
         # Load rerank config from nested section
+        if rerank_raw := reporag.get("rerank"):
+            if isinstance(rerank_raw, dict):
+                if "enabled" in rerank_raw:
+                    self.rerank.enabled = bool(rerank_raw["enabled"])
+                if "top_k" in rerank_raw:
+                    self.rerank.top_k = int(rerank_raw["top_k"])
+                if "final_k" in rerank_raw:
+                    self.rerank.final_k = int(rerank_raw["final_k"])
+                if "method" in rerank_raw:
+                    self.rerank.method = str(rerank_raw["method"])
+                if "model" in rerank_raw:
+                    self.rerank.model = str(rerank_raw["model"])
+
 
 def _config_locations() -> list[Path]:
     locations = []
