@@ -9,6 +9,7 @@ import httpx
 
 from reporag.constants import DEFAULT_NUM_CTX, DEFAULT_TEMPERATURE
 from reporag.llm.backends.base import LLMBackend
+from reporag.llm.retry import with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +25,29 @@ def _base_url(override: str | None) -> str:
 
 
 class OllamaBackend(LLMBackend):
-    def __init__(self, base_url: str | None = None, timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float | None = None,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0,
+    ) -> None:
         self.base_url = _base_url(base_url)
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
 
     def embed(self, texts: list[str], model: str) -> list[list[float]]:
         if not texts:
             return []
+
         payload: dict[str, Any] = {"model": model, "input": texts}
         try:
-            r = self._client.post("/api/embed", json=payload)
+            r = with_retry(
+                lambda: self._client.post("/api/embed", json=payload),
+                max_retries=self.max_retries,
+                backoff_factor=self.backoff_factor,
+            )
             r.raise_for_status()
             data = r.json()
             embs = data.get("embeddings")
@@ -46,9 +60,16 @@ class OllamaBackend(LLMBackend):
         except httpx.HTTPError:
             raise
 
+        # Legacy per-text fallback
         out: list[list[float]] = []
         for t in texts:
-            r = self._client.post("/api/embeddings", json={"model": model, "prompt": t})
+            r = with_retry(
+                lambda t=t: self._client.post(
+                    "/api/embeddings", json={"model": model, "prompt": t}
+                ),
+                max_retries=self.max_retries,
+                backoff_factor=self.backoff_factor,
+            )
             r.raise_for_status()
             data = r.json()
             emb = data.get("embedding")
@@ -64,17 +85,25 @@ class OllamaBackend(LLMBackend):
         stream: bool = False,
         temperature: float | None = None,
     ) -> str:
-        r = self._client.post(
-            "/api/chat",
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": stream,
-                "num_ctx": DEFAULT_NUM_CTX,
-                "options": {
-                    "temperature": temperature if temperature is not None else DEFAULT_TEMPERATURE
+        r = with_retry(
+            lambda: self._client.post(
+                "/api/chat",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": stream,
+                    "num_ctx": DEFAULT_NUM_CTX,
+                    "options": {
+                        "temperature": (
+                            temperature
+                            if temperature is not None
+                            else DEFAULT_TEMPERATURE
+                        )
+                    },
                 },
-            },
+            ),
+            max_retries=self.max_retries,
+            backoff_factor=self.backoff_factor,
         )
         r.raise_for_status()
         data = r.json()
@@ -96,11 +125,28 @@ class OllamaBackend(LLMBackend):
             "stream": True,
             "num_ctx": DEFAULT_NUM_CTX,
             "options": {
-                "temperature": temperature if temperature is not None else DEFAULT_TEMPERATURE
+                "temperature": (
+                    temperature if temperature is not None else DEFAULT_TEMPERATURE
+                )
             },
         }
-        with self._client.stream("POST", "/api/chat", json=payload) as response:
-            response.raise_for_status()
+
+        # Retry connection establishment, then stream tokens
+        def _open_stream() -> tuple[httpx.StreamContextManager, httpx.Response]:
+            cm = self._client.stream("POST", "/api/chat", json=payload)
+            # Entering the context manager actually sends the request.
+            response = cm.__enter__()
+            if response.is_error:
+                cm.__exit__(None, None, None)
+                response.raise_for_status()
+            return cm, response
+
+        cm, response = with_retry(
+            _open_stream,
+            max_retries=self.max_retries,
+            backoff_factor=self.backoff_factor,
+        )
+        try:
             for line in response.iter_lines():
                 if line:
                     try:
@@ -112,6 +158,8 @@ class OllamaBackend(LLMBackend):
                     content = msg.get("content", "")
                     if content:
                         yield content
+        finally:
+            cm.__exit__(None, None, None)
 
     def close(self) -> None:
         self._client.close()

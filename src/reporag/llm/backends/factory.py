@@ -17,15 +17,28 @@ def create_backend(
     base_url: str | None = None,
     api_key: str | None = None,
     timeout: float | None = None,
+    max_retries: int = 3,
+    backoff_factor: float = 2.0,
 ) -> LLMBackend:
     match backend:
         case "ollama":
-            return OllamaBackend(base_url=base_url, timeout=timeout)
+            return OllamaBackend(
+                base_url=base_url,
+                timeout=timeout,
+                max_retries=max_retries,
+                backoff_factor=backoff_factor,
+            )
         case "vllm" | "llamacpp" | "lmstudio" | "lmstudio-local":
             if not base_url:
                 msg = f"base_url required for {backend} backend"
                 raise ValueError(msg)
-            return OpenAICompatBackend(base_url=base_url, api_key=api_key, timeout=timeout)
+            return OpenAICompatBackend(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                max_retries=max_retries,
+                backoff_factor=backoff_factor,
+            )
         case _:
             msg = f"Unknown backend: {backend}"
             raise ValueError(msg)

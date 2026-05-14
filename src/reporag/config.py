@@ -27,8 +27,10 @@ class Config:
     api_key: str | None = None
     embed_batch: int = DEFAULT_EMBED_BATCH
     temperature: float = DEFAULT_TEMPERATURE
-    timeout: float | None = None  # HTTP timeout in seconds for LLM API calls
-    exclude_patterns: list[str] | None = None  # Additional glob exclusion patterns
+    timeout: float | None = None
+    exclude_patterns: list[str] | None = None
+    max_retries: int = 3
+    backoff_factor: float = 2.0
 
     @property
     def ollama_base(self) -> str | None:
@@ -67,6 +69,10 @@ embed_batch = {DEFAULT_EMBED_BATCH}
 
 # Additional glob exclusion patterns (comma-separated in TOML array)
 # exclude_patterns = ["tests/", "venv/", "*.pyc"]
+
+# HTTP request retry settings
+max_retries = 3
+backoff_factor = 2.0
 """
 
     @classmethod
@@ -126,7 +132,12 @@ embed_batch = {DEFAULT_EMBED_BATCH}
             self.exclude_patterns = exclude_patterns
         if timeout := reporag.get("timeout"):
             self.timeout = timeout
+        if max_retries := reporag.get("max_retries"):
+            self.max_retries = max_retries
+        if backoff_factor := reporag.get("backoff_factor"):
+            self.backoff_factor = backoff_factor
 
+        # Load rerank config from nested section
 
 def _config_locations() -> list[Path]:
     locations = []
