@@ -186,6 +186,18 @@ embed_batch = 32
 # api_key = ""
 # timeout = 60
 # exclude_patterns = ["tests/", "venv/"]
+
+# Retry settings for transient HTTP errors (timeouts, 5xx)
+max_retries = 3
+backoff_factor = 2.0
+
+# Cross-encoder reranking (opt-in; adds latency but improves relevance)
+[reporag.rerank]
+enabled = false
+top_k = 20
+final_k = 8
+method = "llm"
+# model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 ```
 
 ### Options
@@ -202,6 +214,68 @@ embed_batch = 32
 | `embed_batch` | `32` | Embedding batch size |
 | `timeout` | — | HTTP timeout (seconds) |
 | `exclude_patterns` | — | Glob patterns to exclude from indexing |
+| `max_retries` | `3` | Maximum retry attempts for transient HTTP errors |
+| `backoff_factor` | `2.0` | Exponential backoff multiplier (1s → 2s → 4s …) |
+
+#### Rerank options
+
+The `[reporag.rerank]` section configures relevance reranking. When enabled, the top *top_k* first-stage retrieval results are re-scored using either the chat LLM or a local cross-encoder model, and only the best *final_k* are kept for the final answer.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Enable reranking (opt-in) |
+| `top_k` | `20` | Number of first-stage results to rerank |
+| `final_k` | `8` | Number of results to keep after reranking |
+| `method` | `"llm"` | Reranking method: `"llm"` or `"cross-encoder"` |
+| `model` | `""` | Cross-encoder model name (e.g. `"cross-encoder/ms-marco-MiniLM-L-6-v2"`) |
+
+## Reranking
+
+Reranking re-scores the top first-stage retrieval results to improve relevance before the LLM generates an answer. It is **opt-in** (disabled by default) since it adds latency.
+
+### LLM-based reranking (default)
+
+When `method = "llm"`, each batch of passages is sent to your configured chat model with a scoring prompt. No extra dependencies required — works with any backend (Ollama, OpenAI-compatible, etc.).
+
+```toml
+[reporag.rerank]
+enabled = true
+method = "llm"
+top_k = 20
+final_k = 8
+```
+
+### Cross-encoder reranking (faster, requires PyTorch)
+
+When `method = "cross-encoder"`, RepoRAG uses a local cross-encoder model from [sentence-transformers](https://www.sbert.net/) to score passages. This is significantly faster than LLM-based scoring (batched prediction, no token generation) but requires PyTorch.
+
+**Setup:**
+
+```bash
+pip install sentence-transformers
+```
+
+**Usage:**
+
+```toml
+[reporag.rerank]
+enabled = true
+method = "cross-encoder"
+model = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+top_k = 20
+final_k = 8
+```
+
+Good cross-encoder models for code/document relevance:
+
+| Model | Notes |
+|-------|-------|
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` | Fast, good general-purpose (default recommendation) |
+| `cross-encoder/ms-marco-MiniLM-L-12-v2` | More accurate, slightly slower |
+| `BAAI/bge-reranker-v2-m3` | Multilingual, strong zero-shot performance |
+| `jinaai/jina-reranker-v2-base-multilingual` | Good for mixed-language codebases |
+
+Reranking applies to both the `search` and `ask` commands.
 
 ## Supported languages
 
