@@ -35,6 +35,7 @@ from reporag.retrieval.context_files import (
     chunk_context_path,
     retrieve_context_sections,
 )
+from reporag.retrieval.reranking import rerank_chunks
 from reporag.retrieval.search import RetrievedChunk, hybrid_search, top_k_similar
 from reporag.types import Chunk
 
@@ -59,6 +60,8 @@ def get_backend(
         base_url=cfg.base_url,
         api_key=cfg.api_key,
         timeout=cfg.timeout,
+        max_retries=cfg.max_retries,
+        backoff_factor=cfg.backoff_factor,
     )
 
 
@@ -89,6 +92,44 @@ def read_context_path(path: Path) -> str:
         return ""
 
     return "\n\n---\n\n".join(files)
+
+
+def validate_embed_model(client: LLMBackend, embed_model: str) -> None:
+    """Probe the embedding model with a single test string.
+
+    Exits with a clear error message if the model is unavailable or returns
+    unexpected results, so the user doesn't waste time on a full run.
+    """
+    logger.info("Probing embedding model '%s' ...", embed_model)
+    try:
+        result = client.embed(["test"], embed_model)
+    except httpx.HTTPError as e:
+        typer.secho(
+            f"Embedding model '{embed_model}' is not reachable: {e}\n"
+            f"  Check that your backend is running and the model name is correct.\n"
+            f"  For Ollama: run `ollama pull {embed_model}`",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(1) from e
+    except (ValueError, RuntimeError) as e:
+        typer.secho(
+            f"Embedding model '{embed_model}' returned unexpected data: {e}",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(1) from e
+
+    if not result or not isinstance(result[0], list) or len(result[0]) == 0:
+        typer.secho(
+            f"Embedding model '{embed_model}' returned an empty or malformed response.",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    dim = len(result[0])
+    logger.info("Embedding model '%s' OK (dimension %d)", embed_model, dim)
 
 
 def _retrieve_hits(
@@ -301,6 +342,10 @@ def cmd_index(
     db = db or Path(cfg.db)
     embed_model = embed_model or cfg.embed_model
     client = get_backend(cfg, backend)
+
+    # Validate the embedding model before doing any file work
+    validate_embed_model(client, embed_model)
+
     idx = open_index(db)
 
     httpx_logger = logging.getLogger("httpx")
@@ -481,6 +526,10 @@ def cmd_search(
     db = db or Path(cfg.db)
     embed_model = embed_model or cfg.embed_model
     client = get_backend(cfg, backend)
+
+    # Validate the embedding model before retrieval
+    validate_embed_model(client, embed_model)
+
     try:
         idx = open_index(db)
         try:
@@ -534,6 +583,20 @@ def cmd_search(
                 hits = list(hits) + graph_related
             finally:
                 idx_for_graph.close()
+
+        # Rerank if enabled in config
+        if cfg.rerank.enabled:
+            hits = rerank_chunks(
+                client=client,
+                query=query,
+                chunks=hits,
+                chat_model=cfg.chat_model,
+                temperature=cfg.temperature,
+                top_k=cfg.rerank.top_k,
+                final_k=cfg.rerank.final_k,
+                method=cfg.rerank.method,
+                cross_encoder_model=cfg.rerank.model,
+            )
 
         for h in hits:
             output: dict[str, object] = {
@@ -596,6 +659,10 @@ def cmd_ask(
     chat_model = chat_model or cfg.chat_model
     temperature = cfg.temperature
     client = get_backend(cfg, backend)
+
+    # Validate the embedding model before retrieval
+    validate_embed_model(client, embed_model)
+
     context_sections: list[ContextSection] | None = None
     if context_file is not None:
         sections = chunk_context_path(context_file)
@@ -641,6 +708,20 @@ def cmd_ask(
                 hits = list(hits) + graph_related
             finally:
                 idx_for_graph.close()
+
+        # Rerank if enabled in config
+        if cfg.rerank.enabled:
+            hits = rerank_chunks(
+                client=client,
+                query=query,
+                chunks=hits,
+                chat_model=chat_model,
+                temperature=temperature,
+                top_k=cfg.rerank.top_k,
+                final_k=cfg.rerank.final_k,
+                method=cfg.rerank.method,
+                cross_encoder_model=cfg.rerank.model,
+            )
 
         context_block = build_context_block(hits)
         user_msg = build_rag_user_content(query, context_block, context_sections=context_sections)
