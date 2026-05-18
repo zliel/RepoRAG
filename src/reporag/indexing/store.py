@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 def _sanitize_fts_query(query: str) -> str:
     """Remove FTS5 special characters that cause syntax errors."""
     for char in '?*"()^,':
+    Retains ``*`` (valid FTS5 prefix query syntax, e.g. ``func*``).
+    Strips ``? " ( ) ^ ,`` which are not valid in FTS5 MATCH.
         query = query.replace(char, "")
     # Handle unbalanced quotes
     query = query.replace('"', "")
