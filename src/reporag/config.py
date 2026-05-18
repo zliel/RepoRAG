@@ -169,6 +169,32 @@ method = "llm"
                 if "model" in rerank_raw:
                     self.rerank.model = str(rerank_raw["model"])
 
+        # Warn about unknown config keys
+        _KNOWN_KEYS = {
+            "backend", "embed_model", "chat_model", "db", "base_url",
+            "api_key", "embed_batch", "temperature", "exclude_patterns",
+            "timeout", "max_retries", "backoff_factor", "rerank",
+        }
+        _KNOWN_RERANK_KEYS = {"enabled", "top_k", "final_k", "method", "model"}
+
+        for key in reporag:
+            if key == "rerank":
+                if isinstance(reporag["rerank"], dict):
+                    for sub_key in reporag["rerank"]:
+                        if sub_key not in _KNOWN_RERANK_KEYS:
+                            logger.warning(
+                                "Unknown config key 'rerank.%s' in [reporag.rerank] section. "
+                                "Known keys: %s",
+                                sub_key,
+                                ", ".join(sorted(_KNOWN_RERANK_KEYS)),
+                            )
+            elif key not in _KNOWN_KEYS:
+                logger.warning(
+                    "Unknown config key '%s' in [reporag] section. Known keys: %s",
+                    key,
+                    ", ".join(sorted(_KNOWN_KEYS)),
+                )
+
 
 def _config_locations() -> list[Path]:
     locations = []
